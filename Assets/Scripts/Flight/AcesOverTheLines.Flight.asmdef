@@ -1,7 +1,9 @@
 {
     "name": "AcesOverTheLines.Flight",
     "rootNamespace": "AcesOverTheLines.Flight",
-    "references": [],
+    "references": [
+        "AcesOverTheLines.Weapons"
+    ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
