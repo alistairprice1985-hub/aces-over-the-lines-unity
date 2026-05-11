@@ -3,6 +3,7 @@
     "rootNamespace": "AcesOverTheLines.Flight.Tests",
     "references": [
         "AcesOverTheLines.Flight",
+        "AcesOverTheLines.Weapons",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],
