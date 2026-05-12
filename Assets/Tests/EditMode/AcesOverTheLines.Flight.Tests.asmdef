@@ -5,6 +5,7 @@
         "AcesOverTheLines.Flight",
         "AcesOverTheLines.Weapons",
         "AcesOverTheLines.Input",
+        "AcesOverTheLines.Aircraft",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],
