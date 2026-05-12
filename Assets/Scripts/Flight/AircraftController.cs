@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
+using AcesOverTheLines.Weapons;
 
 namespace AcesOverTheLines.Flight
 {
@@ -23,8 +25,10 @@ namespace AcesOverTheLines.Flight
         Rigidbody _rb;
         AircraftEntity _entity;
         IFlightControlSource _controlSource;
+        WeaponSystem _weaponSystem;
 
         public AircraftEntity Entity => _entity;
+        public AircraftConfig Config => _entity != null ? _entity.Config : AircraftRoster.GetAircraftConfig(aircraftId);
 
         void Awake()
         {
@@ -47,6 +51,33 @@ namespace AcesOverTheLines.Flight
                     (float)(-Math.Sin(headingRad) * initialSpeedMs));
             }
             _entity = new AircraftEntity(config, _rb, position: pos, velocity: initialVel, heading: headingRad);
+
+            // Wire weapons: convert Flight.GunSpec → Weapons.GunSpec and
+            // hand the loadout to WeaponSystem. Done here (rather than in
+            // WeaponSystem.Awake) to avoid a circular Weapons → Flight
+            // asmdef reference for the AircraftConfig type.
+            _weaponSystem = GetComponent<WeaponSystem>();
+            if (_weaponSystem != null)
+            {
+                var weaponSpecs = new List<AcesOverTheLines.Weapons.GunSpec>(config.Guns.Count);
+                foreach (var g in config.Guns)
+                {
+                    weaponSpecs.Add(new AcesOverTheLines.Weapons.GunSpec
+                    {
+                        Type = g.Type,
+                        Rounds = g.Rounds,
+                        RateOfFireRpm = g.RateOfFireRpm,
+                        MuzzleVelocityMS = g.MuzzleVelocityMS,
+                        DamagePerHitHp = g.DamagePerHitHp,
+                        DispersionRad = g.DispersionRad,
+                        JamProbabilityPerRound = g.JamProbabilityPerRound,
+                        ClearJamTimeS = g.ClearJamTimeS,
+                        Synchronised = g.Synchronised,
+                        Mount = g.Mount,
+                    });
+                }
+                _weaponSystem.Initialize(config.GeometryKind, weaponSpecs);
+            }
         }
 
         void FixedUpdate()
@@ -68,6 +99,7 @@ namespace AcesOverTheLines.Flight
                 controls = _controlSource.ReadControls(Time.fixedDeltaTime);
             }
             _entity.Update(Time.fixedDeltaTime, controls);
+            if (_weaponSystem != null) _weaponSystem.Tick(Time.fixedDeltaTime, controls.Fire);
         }
     }
 }

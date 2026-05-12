@@ -32,7 +32,9 @@ namespace AcesOverTheLines.Weapons
         public GunSpec Clone() => (GunSpec)MemberwiseClone();
     }
 
-    public struct Bullet
+    // Per-shot info emitted by Gun.Tick when a round fires. The Bullet
+    // class (in-flight projectile) is built from this + the aircraft pose.
+    public struct Shot
     {
         public bool Tracer;
         public double DispersionRad;
@@ -78,10 +80,10 @@ namespace AcesOverTheLines.Weapons
             _rounds = spec.Rounds;
         }
 
-        // Per-tick step. Returns null or a Bullet this tick (a single gun
+        // Per-tick step. Returns null or a Shot this tick (a single gun
         // never emits more than one per tick at our 1/120 s tick rate, since
         // the fastest Vickers period is ~0.145 s).
-        public Bullet? Tick(double dt, bool triggerHeld, bool clearJamHeld = false)
+        public Shot? Tick(double dt, bool triggerHeld, bool clearJamHeld = false)
         {
             _cooldown = Math.Max(0.0, _cooldown - dt);
             if (_jammed)
@@ -114,7 +116,7 @@ namespace AcesOverTheLines.Weapons
             if (tracer) _tracerTotal++;
 
             Random rng = _rng;
-            return new Bullet
+            return new Shot
             {
                 Tracer = tracer,
                 DispersionRad = Spec.DispersionRad,

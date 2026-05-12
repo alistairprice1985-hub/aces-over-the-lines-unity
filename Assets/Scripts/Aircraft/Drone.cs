@@ -19,15 +19,6 @@ namespace AcesOverTheLines.Aircraft
         [SerializeField, Range(0f, 1f)] float flashDurationS = 0.30f;
         [SerializeField] string hitboxLayer = "EnemyHitbox";
 
-        public struct DamageResult
-        {
-            public double Applied;
-            // True only on the transition tick where the drone first becomes
-            // destroyed. Subsequent damage returns false even though
-            // Drone.Destroyed remains true.
-            public bool Destroyed;
-        }
-
         public struct ComponentStatus
         {
             public bool PilotDestroyed;
@@ -179,12 +170,15 @@ namespace AcesOverTheLines.Aircraft
         // Apply damage to a named component. Clamps to remaining HP and
         // (on first destruction) flips Destroyed and queues the destroyed
         // visual via the flash-timer expiry. Always triggers a hit flash.
-        public DamageResult DamageComponent(string name, double dmg)
+        // Returns DamageInfo (Weapons namespace) — Applied is the actual
+        // damage taken, Destroyed is true only on the transition tick where
+        // the drone first becomes destroyed.
+        public DamageInfo DamageComponent(string name, double dmg)
         {
             if (!_components.TryGetValue(name, out var c))
-                return new DamageResult { Applied = 0.0, Destroyed = false };
+                return default;
             if (c.hp <= 0.0)
-                return new DamageResult { Applied = 0.0, Destroyed = false };
+                return default;
 
             double applied = Math.Min(dmg, c.hp);
             c.hp -= applied;
@@ -197,7 +191,7 @@ namespace AcesOverTheLines.Aircraft
             {
                 Destroyed = true;
             }
-            return new DamageResult { Applied = applied, Destroyed = Destroyed && !wasDestroyed };
+            return new DamageInfo { Applied = applied, Destroyed = Destroyed && !wasDestroyed };
         }
 
         public ComponentStatus Status()

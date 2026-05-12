@@ -1,11 +1,15 @@
 using UnityEngine;
+using AcesOverTheLines.Weapons;
 
 namespace AcesOverTheLines.Aircraft
 {
-    // Attached to each per-component hitbox child of a Drone. The bullet
-    // collider system (Stage 4h) raycast-hits these, reads the component
-    // name, and calls Damage() to apply HP loss + hit flash on the owner.
-    public class DroneComponent : MonoBehaviour
+    // Attached to each per-component hitbox child of a Drone. Implements
+    // IDamageReceiver so the bullet system (Weapons assembly) can apply
+    // damage without a direct type reference to Drone/Aircraft. The bullet
+    // raycast-hits this collider, gets the IDamageReceiver via
+    // GetComponent, and calls TakeDamage() — which routes back to the
+    // owning Drone.
+    public class DroneComponent : MonoBehaviour, IDamageReceiver
     {
         public Drone Owner { get; private set; }
         public string ComponentName { get; private set; }
@@ -16,10 +20,10 @@ namespace AcesOverTheLines.Aircraft
             ComponentName = componentName;
         }
 
-        public Drone.DamageResult Damage(double dmg)
+        public DamageInfo TakeDamage(double damage)
         {
-            return Owner != null ? Owner.DamageComponent(ComponentName, dmg)
-                                 : new Drone.DamageResult { Applied = 0.0, Destroyed = false };
+            if (Owner == null) return default;
+            return Owner.DamageComponent(ComponentName, damage);
         }
     }
 }

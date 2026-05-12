@@ -609,6 +609,7 @@ GameObject:
   - component: {fileID: 1110500283}
   - component: {fileID: 1110500282}
   - component: {fileID: 1110500288}
+  - component: {fileID: 1110500289}
   m_Layer: 0
   m_Name: TestPlane
   m_TagString: Untagged
@@ -771,6 +772,22 @@ MonoBehaviour:
   m_EditorClassIdentifier: AcesOverTheLines.Input::AcesOverTheLines.Input.FlightInput
   initialThrottle: 0.7
   readSliderThrottle: 0
+--- !u!114 &1110500289
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1110500281}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c5ce902fabed0574a8895aadc63bdd38, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: AcesOverTheLines.Weapons::AcesOverTheLines.Weapons.WeaponSystem
+  enemyHitboxLayer: EnemyHitbox
+  tracerPoolSize: 16
+  muzzleFlashPoolSize: 16
+  sparkPoolSize: 16
 --- !u!1 &1995635000
 GameObject:
   m_ObjectHideFlags: 0
