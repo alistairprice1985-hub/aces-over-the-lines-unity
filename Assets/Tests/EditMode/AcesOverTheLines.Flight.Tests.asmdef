@@ -4,6 +4,7 @@
     "references": [
         "AcesOverTheLines.Flight",
         "AcesOverTheLines.Weapons",
+        "AcesOverTheLines.Input",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

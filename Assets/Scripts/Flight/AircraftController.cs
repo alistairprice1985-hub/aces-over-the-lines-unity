@@ -14,6 +14,7 @@ namespace AcesOverTheLines.Flight
         [SerializeField] float initialAltitudeM = 1500f;
         [SerializeField] float initialHeadingDeg = 0f;
         [SerializeField] float initialSpeedMs = 0f;
+        [SerializeField] bool useStubControls = false;
         [SerializeField, Range(0f, 1f)] float stubThrottle = 0.7f;
         [SerializeField, Range(-1f, 1f)] float stubElevator = 0f;
         [SerializeField, Range(-1f, 1f)] float stubAileron = 0f;
@@ -21,12 +22,18 @@ namespace AcesOverTheLines.Flight
 
         Rigidbody _rb;
         AircraftEntity _entity;
+        IFlightControlSource _controlSource;
 
         public AircraftEntity Entity => _entity;
 
         void Awake()
         {
             _rb = GetComponent<Rigidbody>();
+            // Interface lookup: finds any MonoBehaviour on this GameObject
+            // implementing IFlightControlSource (e.g. FlightInput in the
+            // AcesOverTheLines.Input assembly). Flight does not reference
+            // Input — GetComponent<TInterface>() resolves at runtime.
+            _controlSource = GetComponent<IFlightControlSource>();
             var config = AircraftRoster.GetAircraftConfig(aircraftId);
             var pos = new Vector3(0f, initialAltitudeM, 0f);
             double headingRad = initialHeadingDeg * Math.PI / 180.0;
@@ -45,13 +52,21 @@ namespace AcesOverTheLines.Flight
         void FixedUpdate()
         {
             if (_entity == null) return;
-            var controls = new ControlInput
+            ControlInput controls;
+            if (useStubControls || _controlSource == null)
             {
-                Elevator = stubElevator,
-                Aileron = stubAileron,
-                Rudder = stubRudder,
-                Throttle = stubThrottle,
-            };
+                controls = new ControlInput
+                {
+                    Elevator = stubElevator,
+                    Aileron  = stubAileron,
+                    Rudder   = stubRudder,
+                    Throttle = stubThrottle,
+                };
+            }
+            else
+            {
+                controls = _controlSource.ReadControls(Time.fixedDeltaTime);
+            }
             _entity.Update(Time.fixedDeltaTime, controls);
         }
     }
