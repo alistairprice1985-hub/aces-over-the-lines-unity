@@ -134,6 +134,81 @@ namespace AcesOverTheLines.AI.Tests
                 snapRangeM: 50f, snapDeflectionDeg: 30f));
         }
 
+        // ---- Altitude floor + low-altitude clamp (Stage 6 tuning round 2) ----
+
+        [Test]
+        public void AltitudeFloorClampsElevatorToStrongPullUp()
+        {
+            // Input commanded a dive at low altitude — floor MUST force
+            // elevator to at least the strong pull-up value.
+            var input = new AcesOverTheLines.Flight.ControlInput { Elevator = -0.5, Aileron = 0.6, Throttle = 0.5 };
+            var output = AIController.ApplyAltitudeFloor(
+                input, altitudeAGL: 100f, floorAGL: 250f, forcedElevatorMin: 0.80f);
+            Assert.GreaterOrEqual(output.Elevator, 0.80);
+            Assert.AreEqual(0.0, output.Aileron, 1e-9, "floor forces wings level");
+            Assert.AreEqual(1.0, output.Throttle, 1e-9, "floor forces full throttle");
+        }
+
+        [Test]
+        public void AltitudeFloorLeavesInputUnchangedAboveFloor()
+        {
+            var input = new AcesOverTheLines.Flight.ControlInput { Elevator = -0.5, Aileron = 0.6, Throttle = 0.5 };
+            var output = AIController.ApplyAltitudeFloor(
+                input, altitudeAGL: 800f, floorAGL: 250f, forcedElevatorMin: 0.80f);
+            Assert.AreEqual(-0.5, output.Elevator, 1e-9);
+            Assert.AreEqual( 0.6, output.Aileron, 1e-9);
+            Assert.AreEqual( 0.5, output.Throttle, 1e-9);
+        }
+
+        [Test]
+        public void AltitudeFloorPreservesHigherPullUp()
+        {
+            // If input already commands a stronger pull-up than the floor
+            // minimum, keep the stronger value.
+            var input = new AcesOverTheLines.Flight.ControlInput { Elevator = 0.95, Aileron = 0.0, Throttle = 1.0 };
+            var output = AIController.ApplyAltitudeFloor(
+                input, altitudeAGL: 100f, floorAGL: 250f, forcedElevatorMin: 0.80f);
+            Assert.AreEqual(0.95, output.Elevator, 1e-9);
+        }
+
+        [Test]
+        public void LowAltitudeEngageCapsRollAndPitchCommands()
+        {
+            // Aggressive commanded dive + hard bank at low altitude → both
+            // get clamped to the safe band.
+            var input = new AcesOverTheLines.Flight.ControlInput { Elevator = -0.9, Aileron = 0.7, Throttle = 1.0 };
+            var output = AIController.ClampForLowAltitude(
+                input, altitudeAGL: 350f, threshold: 500f,
+                elevatorMin: 0.0f, elevatorMax: 0.5f, aileronCap: 0.4f);
+            Assert.AreEqual(0.0, output.Elevator, 1e-6, "dive clamped to no-dive");
+            Assert.AreEqual(0.4, output.Aileron, 1e-6, "hard bank clamped to cap (float→double precision)");
+            Assert.AreEqual(1.0, output.Throttle, 1e-9, "throttle untouched");
+        }
+
+        [Test]
+        public void LowAltitudeClampNoOpAboveThreshold()
+        {
+            // Above the threshold, the clamp passes through.
+            var input = new AcesOverTheLines.Flight.ControlInput { Elevator = -0.9, Aileron = 0.7, Throttle = 1.0 };
+            var output = AIController.ClampForLowAltitude(
+                input, altitudeAGL: 700f, threshold: 500f,
+                elevatorMin: 0.0f, elevatorMax: 0.5f, aileronCap: 0.4f);
+            Assert.AreEqual(-0.9, output.Elevator, 1e-9);
+            Assert.AreEqual( 0.7, output.Aileron, 1e-9);
+        }
+
+        [Test]
+        public void LowAltitudeClampPreservesMidRangeCommands()
+        {
+            // Inputs already within the band pass through unchanged.
+            var input = new AcesOverTheLines.Flight.ControlInput { Elevator = 0.3, Aileron = -0.2, Throttle = 0.7 };
+            var output = AIController.ClampForLowAltitude(
+                input, altitudeAGL: 350f, threshold: 500f,
+                elevatorMin: 0.0f, elevatorMax: 0.5f, aileronCap: 0.4f);
+            Assert.AreEqual( 0.3, output.Elevator, 1e-9);
+            Assert.AreEqual(-0.2, output.Aileron, 1e-9);
+        }
+
         // ---- Energy management ----
 
         [Test]

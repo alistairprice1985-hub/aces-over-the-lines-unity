@@ -704,6 +704,7 @@ GameObject:
   - component: {fileID: 567308686}
   - component: {fileID: 567308685}
   - component: {fileID: 567308684}
+  - component: {fileID: 567308689}
   m_Layer: 0
   m_Name: EnemyDrone
   m_TagString: Untagged
@@ -754,11 +755,17 @@ MonoBehaviour:
   m_EditorClassIdentifier: AcesOverTheLines.AI::AcesOverTheLines.AI.AIController
   target: {fileID: 1110500287}
   decisionRateHz: 5
+  showAIDebug: 1
   visualRangeM: 1000
-  firingRangeM: 200
-  firingDeflectionDeg: 5
   closeRangeM: 300
   frontHemisphereDeg: 60
+  engageRollCap: 0.7
+  farFireRangeM: 300
+  farFireDeflectionDeg: 10
+  closeFireRangeM: 100
+  closeFireDeflectionDeg: 5
+  snapFireRangeM: 50
+  snapFireDeflectionDeg: 30
   burstOnS: 0.3
   burstOffS: 0.5
   ammoLowFraction: 0.3
@@ -768,10 +775,19 @@ MonoBehaviour:
   lostGeometrySeconds: 4
   disengageNoseDownNormalised: 0.7
   disengageDurationS: 5
+  disengageAltitudeFloorM: 300
   evadeDurationS: 3
   stallSpeedV0Ms: 11.1
+  stallMarginX: 2
+  stallRecoveryDurationS: 2
   patrolThrottle: 0.7
   patrolMinAltitudeM: 200
+  altitudeFloorAGL: 250
+  altitudeFloorElevatorMin: 0.8
+  lowAltitudeThresholdM: 500
+  lowAltElevatorMin: 0
+  lowAltElevatorMax: 0.5
+  lowAltAileronCap: 0.4
 --- !u!114 &567308686
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -836,6 +852,27 @@ Rigidbody:
   m_Interpolate: 1
   m_Constraints: 0
   m_CollisionDetection: 3
+--- !u!65 &567308689
+BoxCollider:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 567308681}
+  m_Material: {fileID: 0}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_LayerOverridePriority: 0
+  m_IsTrigger: 0
+  m_ProvidesContacts: 0
+  m_Enabled: 1
+  serializedVersion: 3
+  m_Size: {x: 7, y: 3, z: 9}
+  m_Center: {x: 0, y: 0, z: 0}
 --- !u!1 &714242763
 GameObject:
   m_ObjectHideFlags: 0

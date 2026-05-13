@@ -65,7 +65,17 @@ namespace AcesOverTheLines.AI
         [SerializeField] float patrolMinAltitudeM = 200f;
 
         // Hard altitude floor — never fly into the ground for ANY manoeuvre.
-        [SerializeField] float altitudeFloorAGL = 150f;
+        [SerializeField] float altitudeFloorAGL = 250f;
+        [SerializeField] float altitudeFloorElevatorMin = 0.80f;
+
+        // Energy preservation band — between altitudeFloorAGL and this
+        // threshold, clamp commanded inputs so the AI doesn't dive or
+        // hard-bank itself into the ground. Floor override (above) wins
+        // below altitudeFloorAGL.
+        [SerializeField] float lowAltitudeThresholdM = 500f;
+        [SerializeField] float lowAltElevatorMin = 0.0f;   // no commanded dive in low band
+        [SerializeField] float lowAltElevatorMax = 0.5f;   // no extreme pull either
+        [SerializeField] float lowAltAileronCap = 0.4f;    // gentle banks only
 
         // Control smoothing — same rate as FlightInput's 250 ms ramp.
         const double RAMP_TIME_S = 0.25;
@@ -202,18 +212,9 @@ namespace AcesOverTheLines.AI
 
             // Hard altitude floor — overrides EVERY other consideration,
             // including stall recovery. Better to clip a stall than the
-            // terrain.
-            if (altitude < altitudeFloorAGL)
-            {
-                _diagAltitudeFloor = true;
-                desired.Elevator = System.Math.Max(0.30, desired.Elevator);
-                desired.Aileron = 0.0;  // wings level for pull-up
-                desired.Throttle = 1.0;
-            }
-            else
-            {
-                _diagAltitudeFloor = false;
-            }
+            // terrain. Static helper for testability.
+            desired = ApplyAltitudeFloor(desired, altitude, altitudeFloorAGL, altitudeFloorElevatorMin);
+            _diagAltitudeFloor = altitude < altitudeFloorAGL;
             return desired;
         }
 
@@ -343,7 +344,20 @@ namespace AcesOverTheLines.AI
             _diagRange = range;
             _diagDeflectionDeg = deflectionDeg;
 
-            return new ControlInput { Elevator = elevator, Aileron = aileron, Rudder = rudder, Throttle = throttle, Fire = fire };
+            var ctrl = new ControlInput { Elevator = elevator, Aileron = aileron, Rudder = rudder, Throttle = throttle, Fire = fire };
+
+            // Energy preservation at low altitude: cap commanded pitch + roll
+            // so the AI doesn't trade altitude it doesn't have during a
+            // pursuit turn. ApplyAltitudeFloor (in ApplySafetyOverrides) is
+            // the absolute floor below altitudeFloorAGL; this clamp is the
+            // "be careful" band above the floor.
+            if (_rb != null)
+            {
+                ctrl = ClampForLowAltitude(
+                    ctrl, _rb.position.y, lowAltitudeThresholdM,
+                    lowAltElevatorMin, lowAltElevatorMax, lowAltAileronCap);
+            }
+            return ctrl;
         }
 
         ControlInput DoEvade()
@@ -485,6 +499,36 @@ namespace AcesOverTheLines.AI
         public static bool ShouldFire(float deflectionDeg, float rangeM, float maxDeflectionDeg, float maxRangeM, bool burstOn)
         {
             return burstOn && deflectionDeg < maxDeflectionDeg && rangeM < maxRangeM;
+        }
+
+        // Force minimum elevator (pull-up) when below the hard floor and
+        // zero aileron + full throttle. Wings level for cleanest possible
+        // pull-up; aileron causes energy loss + roll-coupled angle changes.
+        public static ControlInput ApplyAltitudeFloor(
+            ControlInput input, float altitudeAGL, float floorAGL, float forcedElevatorMin)
+        {
+            if (altitudeAGL >= floorAGL) return input;
+            var output = input;
+            if (output.Elevator < forcedElevatorMin) output.Elevator = forcedElevatorMin;
+            output.Aileron = 0.0;
+            output.Throttle = 1.0;
+            return output;
+        }
+
+        // Clamp commanded inputs in the "careful" altitude band (between the
+        // hard floor and a soft threshold above it). Prevents commanded
+        // dives and hard banks that bleed altitude.
+        public static ControlInput ClampForLowAltitude(
+            ControlInput input, float altitudeAGL, float threshold,
+            float elevatorMin, float elevatorMax, float aileronCap)
+        {
+            if (altitudeAGL >= threshold) return input;
+            var output = input;
+            if (output.Elevator < elevatorMin) output.Elevator = elevatorMin;
+            if (output.Elevator > elevatorMax) output.Elevator = elevatorMax;
+            if (output.Aileron < -aileronCap) output.Aileron = -aileronCap;
+            if (output.Aileron >  aileronCap) output.Aileron =  aileronCap;
+            return output;
         }
 
         // Three-window firing decision: fire if the (range, deflection)
