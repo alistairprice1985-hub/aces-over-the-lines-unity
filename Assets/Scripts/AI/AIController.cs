@@ -23,13 +23,24 @@ namespace AcesOverTheLines.AI
 
         [SerializeField] Transform target;
         [SerializeField] float decisionRateHz = 5f;
+        [SerializeField] bool showAIDebug = true;
 
         // Engagement geometry thresholds.
         [SerializeField] float visualRangeM = 1000f;
-        [SerializeField] float firingRangeM = 200f;
-        [SerializeField] float firingDeflectionDeg = 5f;
-        [SerializeField] float closeRangeM = 300f;
+        [SerializeField] float closeRangeM = 300f;       // throttle modulation switch
         [SerializeField] float frontHemisphereDeg = 60f;
+        [SerializeField] float engageRollCap = 0.7f;     // don't over-bank trying to keep aim
+
+        // Three firing windows (any matching window fires when burst is on).
+        // Far window: medium-range with moderate aim discipline.
+        // Close window: short-range with tight aim (5° within 100m).
+        // Snap window: very-close pass-by burst (wider deflection allowed).
+        [SerializeField] float farFireRangeM = 300f;
+        [SerializeField] float farFireDeflectionDeg = 10f;
+        [SerializeField] float closeFireRangeM = 100f;
+        [SerializeField] float closeFireDeflectionDeg = 5f;
+        [SerializeField] float snapFireRangeM = 50f;
+        [SerializeField] float snapFireDeflectionDeg = 30f;
 
         // Burst-fire cadence.
         [SerializeField] float burstOnS = 0.3f;
@@ -43,12 +54,18 @@ namespace AcesOverTheLines.AI
         [SerializeField] float lostGeometrySeconds = 4f;
         [SerializeField] float disengageNoseDownNormalised = 0.7f;
         [SerializeField] float disengageDurationS = 5f;
+        [SerializeField] float disengageAltitudeFloorM = 300f;  // below this, lateral escape only
         [SerializeField] float evadeDurationS = 3f;
 
         // Patrol energy management.
         [SerializeField] float stallSpeedV0Ms = 11.1f;          // matches AircraftEntity authority v0
+        [SerializeField] float stallMarginX = 2.0f;             // recovery triggers below this × stall
+        [SerializeField] float stallRecoveryDurationS = 2.0f;
         [SerializeField] float patrolThrottle = 0.7f;
         [SerializeField] float patrolMinAltitudeM = 200f;
+
+        // Hard altitude floor — never fly into the ground for ANY manoeuvre.
+        [SerializeField] float altitudeFloorAGL = 150f;
 
         // Control smoothing — same rate as FlightInput's 250 ms ramp.
         const double RAMP_TIME_S = 0.25;
@@ -64,6 +81,17 @@ namespace AcesOverTheLines.AI
         float _noFiringSolutionTime;
         float _burstTimer;
         bool _burstOn;
+        float _stallRecoveryTimer;
+
+        // Diagnostic state cached per-tick for the overlay.
+        float _diagRange;
+        float _diagDeflectionDeg;
+        float _diagSpeed;
+        float _diagAltitude;
+        double _diagThrottle;
+        float _lastFireTime = -10f;
+        bool _diagStallRecovery;
+        bool _diagAltitudeFloor;
         int _initialAmmoTotal;
 
         // Smoothed control outputs.
@@ -109,11 +137,21 @@ namespace AcesOverTheLines.AI
             // Per-tick burst-fire timer + control output.
             UpdateBurst((float)dt);
             ControlInput desired = ComputeDesiredControls();
+            desired = ApplySafetyOverrides(desired, dt);
 
             // Smooth elevator / aileron / rudder; throttle bypasses smoothing.
             _smoothedElevator = RampTo(_smoothedElevator, desired.Elevator, dt);
             _smoothedAileron  = RampTo(_smoothedAileron,  desired.Aileron,  dt);
             _smoothedRudder   = RampTo(_smoothedRudder,   desired.Rudder,   dt);
+
+            // Cache diagnostic state for the OnGUI overlay.
+            if (_rb != null)
+            {
+                _diagSpeed = _rb.linearVelocity.magnitude;
+                _diagAltitude = _rb.position.y;
+            }
+            _diagThrottle = desired.Throttle;
+            if (desired.Fire) _lastFireTime = Time.time;
 
             return new ControlInput
             {
@@ -123,6 +161,60 @@ namespace AcesOverTheLines.AI
                 Throttle = desired.Throttle,
                 Fire     = desired.Fire,
             };
+        }
+
+        // ============================================================
+        // Safety overrides — stall recovery + hard altitude floor
+        // ============================================================
+
+        ControlInput ApplySafetyOverrides(ControlInput desired, double dt)
+        {
+            if (_rb == null) return desired;
+            float speed = _rb.linearVelocity.magnitude;
+            float altitude = _rb.position.y;
+
+            // Stall recovery: forced dive + full throttle for a fixed window.
+            // Triggered when speed drops below stallMarginX × stallSpeed and
+            // we're not already mid-recovery. Runs to completion even if
+            // speed climbs back early — gives a real margin before resuming.
+            bool isStall = speed < stallMarginX * stallSpeedV0Ms;
+            if (isStall && _stallRecoveryTimer <= 0f)
+            {
+                _stallRecoveryTimer = stallRecoveryDurationS;
+            }
+            if (_stallRecoveryTimer > 0f)
+            {
+                _stallRecoveryTimer -= (float)dt;
+                _diagStallRecovery = true;
+                desired = new ControlInput
+                {
+                    Elevator = -0.30,
+                    Aileron = 0.0,
+                    Rudder = 0.0,
+                    Throttle = 1.0,
+                    Fire = false,
+                };
+            }
+            else
+            {
+                _diagStallRecovery = false;
+            }
+
+            // Hard altitude floor — overrides EVERY other consideration,
+            // including stall recovery. Better to clip a stall than the
+            // terrain.
+            if (altitude < altitudeFloorAGL)
+            {
+                _diagAltitudeFloor = true;
+                desired.Elevator = System.Math.Max(0.30, desired.Elevator);
+                desired.Aileron = 0.0;  // wings level for pull-up
+                desired.Throttle = 1.0;
+            }
+            else
+            {
+                _diagAltitudeFloor = false;
+            }
+            return desired;
         }
 
         // ============================================================
@@ -223,7 +315,9 @@ namespace AcesOverTheLines.AI
             // Elevator + → pitch up (target above body x-y plane → toLeadBody.y > 0).
             // Aileron  + → roll right (target right of body → toLeadBody.z > 0).
             double elevator = Mathf.Clamp((float)toLeadBody.y * 3f, -1f, 1f);
-            double aileron  = Mathf.Clamp((float)toLeadBody.z * 3f, -1f, 1f);
+            // Roll cap: don't over-bank trying to keep aim. The AI commits to
+            // smoother turns it can recover from.
+            double aileron  = Mathf.Clamp((float)toLeadBody.z * 3f, -engageRollCap, engageRollCap);
             double rudder   = 0.0;
 
             // Throttle: full when far, reduce to 0.5 when closing inside
@@ -236,14 +330,19 @@ namespace AcesOverTheLines.AI
             if (deflectionDeg > 30f) _noFiringSolutionTime += dt;
             else _noFiringSolutionTime = Mathf.Max(0f, _noFiringSolutionTime - dt);
 
-            // Energy management: drop nose if speed too low.
-            if (_rb.linearVelocity.magnitude < 1.5f * stallSpeedV0Ms)
-            {
-                elevator = -0.30;
-                throttle = 1.0;
-            }
+            // Multi-window firing decision: fire if ANY window matches.
+            //   Snap   — very close pass-by burst (≤ 50m, defl < 30°).
+            //   Close  — short range, tight aim (≤ 100m, defl < 5°).
+            //   Far    — medium range, moderate aim (≤ 300m, defl < 10°).
+            bool fire = ShouldFireMultiWindow(
+                deflectionDeg, range, _burstOn,
+                farFireRangeM, farFireDeflectionDeg,
+                closeFireRangeM, closeFireDeflectionDeg,
+                snapFireRangeM, snapFireDeflectionDeg);
 
-            bool fire = ShouldFire(deflectionDeg, range, firingDeflectionDeg, firingRangeM, _burstOn);
+            _diagRange = range;
+            _diagDeflectionDeg = deflectionDeg;
+
             return new ControlInput { Elevator = elevator, Aileron = aileron, Rudder = rudder, Throttle = throttle, Fire = fire };
         }
 
@@ -255,9 +354,41 @@ namespace AcesOverTheLines.AI
 
         ControlInput DoDisengage()
         {
-            // Nose-down dive, full throttle. After disengageDurationS the
-            // transition back to Search fires from UpdateStateTransitions.
+            // Low-altitude disengage: lateral escape instead of diving.
+            // Below the floor we don't have altitude to trade.
+            if (_rb != null && _rb.position.y < disengageAltitudeFloorM)
+            {
+                return new ControlInput { Elevator = 0.0, Aileron = 0.6, Rudder = 0.0, Throttle = 1.0, Fire = false };
+            }
+            // Standard disengage: nose-down dive, full throttle. After
+            // disengageDurationS the transition back to Search fires from
+            // UpdateStateTransitions.
             return new ControlInput { Elevator = -disengageNoseDownNormalised, Throttle = 1.0 };
+        }
+
+        // ============================================================
+        // Debug overlay
+        // ============================================================
+
+        void OnGUI()
+        {
+            if (!showAIDebug) return;
+            const int W = 240;
+            const int H = 168;
+            const int LH = 18;
+            int x = 12, y = 12;
+            GUI.Box(new Rect(x, y, W, H), "AI Debug");
+            y += 22;
+            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"State:      {_state}"); y += LH;
+            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Range:      {_diagRange,6:F0} m"); y += LH;
+            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Deflection: {_diagDeflectionDeg,6:F1}°"); y += LH;
+            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Speed:      {_diagSpeed,6:F1} m/s"); y += LH;
+            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Altitude:   {_diagAltitude,6:F0} m"); y += LH;
+            bool firedRecently = Time.time - _lastFireTime < 1.0f;
+            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Throttle:   {_diagThrottle,6:F2}   Fire: {(firedRecently ? "●" : "○")}"); y += LH;
+            string overrides = (_diagStallRecovery ? "STALL " : "") + (_diagAltitudeFloor ? "FLOOR" : "");
+            if (overrides.Length > 0)
+                GUI.Label(new Rect(x + 8, y, W - 16, LH), $"OVERRIDE:   {overrides}");
         }
 
         // ============================================================
@@ -354,6 +485,23 @@ namespace AcesOverTheLines.AI
         public static bool ShouldFire(float deflectionDeg, float rangeM, float maxDeflectionDeg, float maxRangeM, bool burstOn)
         {
             return burstOn && deflectionDeg < maxDeflectionDeg && rangeM < maxRangeM;
+        }
+
+        // Three-window firing decision: fire if the (range, deflection)
+        // pair satisfies ANY of the configured windows (snap, close, far).
+        // Snap fires at very-close pass-by ranges even with wide deflection;
+        // close requires tight aim; far is the general medium-range window.
+        public static bool ShouldFireMultiWindow(
+            float deflectionDeg, float rangeM, bool burstOn,
+            float farRangeM, float farDeflectionDeg,
+            float closeRangeM, float closeDeflectionDeg,
+            float snapRangeM, float snapDeflectionDeg)
+        {
+            if (!burstOn) return false;
+            if (rangeM < snapRangeM  && deflectionDeg < snapDeflectionDeg)  return true;
+            if (rangeM < closeRangeM && deflectionDeg < closeDeflectionDeg) return true;
+            if (rangeM < farRangeM   && deflectionDeg < farDeflectionDeg)   return true;
+            return false;
         }
 
         public static bool IsLowEnergy(float speedMs, float v0StallMs)
