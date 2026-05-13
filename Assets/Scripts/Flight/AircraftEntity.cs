@@ -21,12 +21,6 @@ namespace AcesOverTheLines.Flight
     // had its own manual gravity term; we drop it to avoid doubling.
     public class AircraftEntity
     {
-        public struct DamageResult
-        {
-            public double Applied;
-            public bool Destroyed;
-        }
-
         public record ComponentStatus
         {
             public bool PilotIncapacitated { get; init; }
@@ -413,12 +407,12 @@ namespace AcesOverTheLines.Flight
         // Apply damage to a named component. Returns the actual amount
         // applied (clamped to remaining HP) and a Destroyed flag that is
         // true only on the transition tick where HP first reaches 0.
-        public DamageResult DamageComponent(string name, double dmg)
+        public DamageInfo DamageComponent(string name, double dmg)
         {
             if (!_components.TryGetValue(name, out var c))
-                return new DamageResult { Applied = 0.0, Destroyed = false };
+                return new DamageInfo { Applied = 0.0, Destroyed = false };
             if (c.hp <= 0)
-                return new DamageResult { Applied = 0.0, Destroyed = false };
+                return new DamageInfo { Applied = 0.0, Destroyed = false };
             double applied = Math.Min(dmg, c.hp);
             c.hp -= applied;
             bool destroyed = c.hp <= 0;
@@ -432,7 +426,7 @@ namespace AcesOverTheLines.Flight
             {
                 EngineHealth = 0.0;
             }
-            return new DamageResult { Applied = applied, Destroyed = destroyed };
+            return new DamageInfo { Applied = applied, Destroyed = destroyed };
         }
 
         public ComponentStatus Status()

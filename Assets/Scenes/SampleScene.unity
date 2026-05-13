@@ -699,7 +699,11 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 567308683}
-  - component: {fileID: 567308682}
+  - component: {fileID: 567308688}
+  - component: {fileID: 567308687}
+  - component: {fileID: 567308686}
+  - component: {fileID: 567308685}
+  - component: {fileID: 567308684}
   m_Layer: 0
   m_Name: EnemyDrone
   m_TagString: Untagged
@@ -707,22 +711,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &567308682
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 567308681}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 4e8f5ff155b32ec478ebe17eb0a1bef9, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: AcesOverTheLines.Aircraft::AcesOverTheLines.Aircraft.Drone
-  aircraftId: fokker_d7
-  initialNoseDownDeg: 0
-  flashDurationS: 0.3
-  hitboxLayer: EnemyHitbox
 --- !u!4 &567308683
 Transform:
   m_ObjectHideFlags: 0
@@ -739,6 +727,115 @@ Transform:
   - {fileID: 345161223}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &567308684
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 567308681}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8711b1e8fb851f142ab3372cac70da7a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: AcesOverTheLines.Flight::AcesOverTheLines.Flight.AircraftHitboxes
+  hitboxLayer: EnemyHitbox
+--- !u!114 &567308685
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 567308681}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7b66d6f345d13144bb4f31a68db66adb, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: AcesOverTheLines.AI::AcesOverTheLines.AI.AIController
+  target: {fileID: 1110500287}
+  decisionRateHz: 5
+  visualRangeM: 1000
+  firingRangeM: 200
+  firingDeflectionDeg: 5
+  closeRangeM: 300
+  frontHemisphereDeg: 60
+  burstOnS: 0.3
+  burstOffS: 0.5
+  ammoLowFraction: 0.3
+  componentLowFraction: 0.5
+  energyLowSpeedMs: 25
+  energyLowAltitudeM: 200
+  lostGeometrySeconds: 4
+  disengageNoseDownNormalised: 0.7
+  disengageDurationS: 5
+  evadeDurationS: 3
+  stallSpeedV0Ms: 11.1
+  patrolThrottle: 0.7
+  patrolMinAltitudeM: 200
+--- !u!114 &567308686
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 567308681}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c5ce902fabed0574a8895aadc63bdd38, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: AcesOverTheLines.Weapons::AcesOverTheLines.Weapons.WeaponSystem
+  enemyHitboxLayer: PlayerHitbox
+  tracerPoolSize: 16
+  muzzleFlashPoolSize: 16
+  sparkPoolSize: 16
+--- !u!114 &567308687
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 567308681}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8cce9466903786d41875c9a777bbbda6, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: AcesOverTheLines.Flight::AcesOverTheLines.Flight.AircraftController
+  aircraftId: fokker_d7
+  initialAltitudeM: 1500
+  initialHeadingDeg: 0
+  initialSpeedMs: 50
+  useStubControls: 0
+  stubThrottle: 0.7
+  stubElevator: 0
+  stubAileron: 0
+  stubRudder: 0
+--- !u!54 &567308688
+Rigidbody:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 567308681}
+  serializedVersion: 5
+  m_Mass: 1
+  m_LinearDamping: 0
+  m_AngularDamping: 0
+  m_CenterOfMass: {x: 0, y: 0, z: 0}
+  m_InertiaTensor: {x: 1, y: 1, z: 1}
+  m_InertiaRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_IncludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ExcludeLayers:
+    serializedVersion: 2
+    m_Bits: 0
+  m_ImplicitCom: 1
+  m_ImplicitTensor: 1
+  m_UseGravity: 1
+  m_IsKinematic: 0
+  m_Interpolate: 1
+  m_Constraints: 0
+  m_CollisionDetection: 3
 --- !u!1 &714242763
 GameObject:
   m_ObjectHideFlags: 0
@@ -928,6 +1025,7 @@ GameObject:
   - component: {fileID: 1110500282}
   - component: {fileID: 1110500288}
   - component: {fileID: 1110500289}
+  - component: {fileID: 1110500290}
   m_Layer: 0
   m_Name: TestPlane
   m_TagString: Untagged
@@ -1050,6 +1148,19 @@ MonoBehaviour:
   tracerPoolSize: 16
   muzzleFlashPoolSize: 16
   sparkPoolSize: 16
+--- !u!114 &1110500290
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1110500281}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8711b1e8fb851f142ab3372cac70da7a, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: AcesOverTheLines.Flight::AcesOverTheLines.Flight.AircraftHitboxes
+  hitboxLayer: PlayerHitbox
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

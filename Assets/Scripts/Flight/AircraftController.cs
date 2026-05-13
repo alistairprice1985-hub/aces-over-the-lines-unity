@@ -26,6 +26,7 @@ namespace AcesOverTheLines.Flight
         AircraftEntity _entity;
         IFlightControlSource _controlSource;
         WeaponSystem _weaponSystem;
+        AircraftHitboxes _hitboxes;
 
         public AircraftEntity Entity => _entity;
         public AircraftConfig Config => _entity != null ? _entity.Config : AircraftRoster.GetAircraftConfig(aircraftId);
@@ -43,12 +44,29 @@ namespace AcesOverTheLines.Flight
             // Input — GetComponent<TInterface>() resolves at runtime.
             _controlSource = GetComponent<IFlightControlSource>();
             var config = AircraftRoster.GetAircraftConfig(aircraftId);
-            var pos = new Vector3(0f, initialAltitudeM, 0f);
-            double headingRad = initialHeadingDeg * Math.PI / 180.0;
+
+            // Honor scene transform as initial pose. The legacy serialized
+            // fields initialAltitudeM / initialHeadingDeg are retained as a
+            // fallback for aircraft placed at the origin with identity
+            // rotation (e.g. brand-new scenes), but a placed GameObject's
+            // own transform takes precedence.
+            Vector3 pos;
+            double headingRad;
+            if (transform.position.sqrMagnitude > 1e-6f || transform.rotation != Quaternion.identity)
+            {
+                pos = transform.position;
+                headingRad = transform.eulerAngles.y * Math.PI / 180.0;
+            }
+            else
+            {
+                pos = new Vector3(0f, initialAltitudeM, 0f);
+                headingRad = initialHeadingDeg * Math.PI / 180.0;
+            }
+
             Vector3? initialVel = null;
             if (initialSpeedMs > 0f)
             {
-                // Body-forward in world: heading=0 → +X.
+                // Body-forward in world: heading=0 → +X, heading=180 → −X.
                 initialVel = new Vector3(
                     (float)( Math.Cos(headingRad) * initialSpeedMs),
                     0f,
@@ -81,6 +99,13 @@ namespace AcesOverTheLines.Flight
                     });
                 }
                 _weaponSystem.Initialize(config.GeometryKind, weaponSpecs);
+            }
+
+            // Per-component hitbox children for bullet damage routing.
+            _hitboxes = GetComponent<AircraftHitboxes>();
+            if (_hitboxes != null)
+            {
+                _hitboxes.Initialize(_entity);
             }
         }
 
