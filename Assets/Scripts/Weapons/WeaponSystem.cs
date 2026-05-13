@@ -47,6 +47,10 @@ namespace AcesOverTheLines.Weapons
         public IReadOnlyList<Gun> Guns => _guns;
         public IReadOnlyList<Bullet> Bullets => _bullets;
 
+        // Fired from the bullet damage-applied path with (worldHitPosition,
+        // componentName). HitMarkers subscribes from the UI assembly.
+        public event System.Action<Vector3, string> OnHit;
+
         void Awake()
         {
             // Self-init only if no caller provided the loadout yet — keeps
@@ -277,8 +281,10 @@ namespace AcesOverTheLines.Weapons
                 var hit = bullet.Step(dt, _hitboxMask);
                 if (hit.HasValue)
                 {
-                    hit.Value.Receiver?.TakeDamage(hit.Value.Damage);
+                    var receiver = hit.Value.Receiver;
+                    receiver?.TakeDamage(hit.Value.Damage);
                     EmitSpark(hit.Value.HitPoint);
+                    OnHit?.Invoke(hit.Value.HitPoint, receiver != null ? receiver.ComponentName : "");
                     Hits++;
                 }
                 if (bullet.Expired)

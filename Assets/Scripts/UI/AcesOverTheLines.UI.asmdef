@@ -1,0 +1,18 @@
+{
+    "name": "AcesOverTheLines.UI",
+    "rootNamespace": "AcesOverTheLines.UI",
+    "references": [
+        "AcesOverTheLines.Flight",
+        "AcesOverTheLines.Weapons",
+        "AcesOverTheLines.Aircraft"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

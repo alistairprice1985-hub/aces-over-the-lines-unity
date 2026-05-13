@@ -29,6 +29,10 @@ namespace AcesOverTheLines.Flight
 
         public AircraftEntity Entity => _entity;
         public AircraftConfig Config => _entity != null ? _entity.Config : AircraftRoster.GetAircraftConfig(aircraftId);
+        // Latest ControlInput passed to the flight model. HUD reads this so
+        // it doesn't have to call ReadControls() itself (which would advance
+        // the smoother state twice per tick).
+        public ControlInput LastControls { get; private set; }
 
         void Awake()
         {
@@ -98,6 +102,7 @@ namespace AcesOverTheLines.Flight
             {
                 controls = _controlSource.ReadControls(Time.fixedDeltaTime);
             }
+            LastControls = controls;
             _entity.Update(Time.fixedDeltaTime, controls);
             if (_weaponSystem != null) _weaponSystem.Tick(Time.fixedDeltaTime, controls.Fire);
         }
