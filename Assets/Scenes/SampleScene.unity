@@ -721,7 +721,7 @@ Transform:
   m_GameObject: {fileID: 567308681}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 1, z: 0, w: -0.00000004371139}
-  m_LocalPosition: {x: 500, y: 500, z: 0}
+  m_LocalPosition: {x: 500, y: 1200, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -781,7 +781,14 @@ MonoBehaviour:
   stallMarginX: 2
   stallRecoveryDurationS: 2
   patrolThrottle: 0.7
-  patrolMinAltitudeM: 200
+  patrolMinAltitudeM: 800
+  climbEntryAltitudeM: 600
+  climbExitAltitudeM: 1000
+  climbEntryDescentRateMs: 30
+  climbEntryDescentSustainS: 2
+  climbElevator: 0.6
+  engageAbandonAltitudeDropM: 300
+  engageAbandonDescentRateMs: 30
   altitudeFloorAGL: 250
   altitudeFloorElevatorMin: 0.8
   lowAltitudeThresholdM: 500
@@ -817,7 +824,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: AcesOverTheLines.Flight::AcesOverTheLines.Flight.AircraftController
   aircraftId: fokker_d7
-  initialAltitudeM: 1500
+  initialAltitudeM: 1200
   initialHeadingDeg: 0
   initialSpeedMs: 50
   useStubControls: 0
@@ -1035,6 +1042,55 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &987438111
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 987438113}
+  - component: {fileID: 987438112}
+  m_Layer: 0
+  m_Name: DogfightSystems
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &987438112
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 987438111}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2159530489459384c9b81865b6e6850f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: AcesOverTheLines.Aircraft::AcesOverTheLines.Aircraft.AirToAirCollisionSystem
+  lowSpeedThresholdMs: 30
+  highSpeedThresholdMs: 60
+  lowDamageFraction: 0.4
+  mediumDamageFraction: 0.8
+  highDamageFraction: 1.5
+--- !u!4 &987438113
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 987438111}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!134 &1079891246
 PhysicsMaterial:
   m_ObjectHideFlags: 0
@@ -1209,3 +1265,4 @@ SceneRoots:
   - {fileID: 714242767}
   - {fileID: 567308683}
   - {fileID: 466114107}
+  - {fileID: 987438113}

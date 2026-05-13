@@ -19,7 +19,7 @@ namespace AcesOverTheLines.AI
     // target's HP, ammo, or controls.
     public class AIController : MonoBehaviour, IFlightControlSource
     {
-        public enum State { Patrol, Search, Engage, Evade, Disengage, RTB }
+        public enum State { Patrol, Search, Engage, Evade, Disengage, RTB, Climb }
 
         [SerializeField] Transform target;
         [SerializeField] float decisionRateHz = 5f;
@@ -62,7 +62,22 @@ namespace AcesOverTheLines.AI
         [SerializeField] float stallMarginX = 2.0f;             // recovery triggers below this × stall
         [SerializeField] float stallRecoveryDurationS = 2.0f;
         [SerializeField] float patrolThrottle = 0.7f;
-        [SerializeField] float patrolMinAltitudeM = 200f;
+        [SerializeField] float patrolMinAltitudeM = 800f;
+
+        // Climb state thresholds. Climb can hard-interrupt any other state
+        // when the AI is below the entry altitude OR descending too fast
+        // for too long. Climb exits when high enough AND actually climbing.
+        [SerializeField] float climbEntryAltitudeM = 600f;
+        [SerializeField] float climbExitAltitudeM = 1000f;
+        [SerializeField] float climbEntryDescentRateMs = 30f;
+        [SerializeField] float climbEntryDescentSustainS = 2f;
+        [SerializeField] float climbElevator = 0.6f;
+
+        // Engage altitude-bleed limits. If the AI loses too much altitude
+        // or starts descending too fast WHILE engaging, it abandons the
+        // pursuit (transitions to Climb) instead of committing further.
+        [SerializeField] float engageAbandonAltitudeDropM = 300f;
+        [SerializeField] float engageAbandonDescentRateMs = 30f;
 
         // Hard altitude floor — never fly into the ground for ANY manoeuvre.
         [SerializeField] float altitudeFloorAGL = 250f;
@@ -92,6 +107,8 @@ namespace AcesOverTheLines.AI
         float _burstTimer;
         bool _burstOn;
         float _stallRecoveryTimer;
+        float _excessDescentTime;     // accumulator for sustained-descent climb trigger
+        float _engageEntryAltitude;   // captured on entering Engage; used for altitude-bleed check
 
         // Diagnostic state cached per-tick for the overlay.
         float _diagRange;
@@ -137,6 +154,12 @@ namespace AcesOverTheLines.AI
 
         public ControlInput ReadControls(double dt)
         {
+            // Per-tick descent-rate accumulator for the Climb trigger.
+            if (_rb != null && _rb.linearVelocity.y < -climbEntryDescentRateMs)
+                _excessDescentTime += (float)dt;
+            else
+                _excessDescentTime = 0f;
+
             // Strategic-level decisions tick at 5 Hz.
             if (Time.time - _lastDecisionTime >= 1f / decisionRateHz)
             {
@@ -182,12 +205,26 @@ namespace AcesOverTheLines.AI
             if (_rb == null) return desired;
             float speed = _rb.linearVelocity.magnitude;
             float altitude = _rb.position.y;
+            bool isStall = speed < stallMarginX * stallSpeedV0Ms;
+            bool isBelowFloor = altitude < altitudeFloorAGL;
+
+            // Both STALL and FLOOR firing simultaneously means a dive-for-
+            // speed override would point the nose INTO terrain. Instead,
+            // escape into the Climb state: wings-level full-throttle steady
+            // pull-up is the only non-contradictory response.
+            if (isStall && isBelowFloor)
+            {
+                if (_state != State.Climb) TransitionIfChanged(State.Climb);
+                _diagStallRecovery = false;
+                _diagAltitudeFloor = true;
+                _stallRecoveryTimer = 0f; // reset so it doesn't fire spuriously after the climb
+                return DoClimb();
+            }
 
             // Stall recovery: forced dive + full throttle for a fixed window.
             // Triggered when speed drops below stallMarginX × stallSpeed and
             // we're not already mid-recovery. Runs to completion even if
             // speed climbs back early — gives a real margin before resuming.
-            bool isStall = speed < stallMarginX * stallSpeedV0Ms;
             if (isStall && _stallRecoveryTimer <= 0f)
             {
                 _stallRecoveryTimer = stallRecoveryDurationS;
@@ -210,11 +247,11 @@ namespace AcesOverTheLines.AI
                 _diagStallRecovery = false;
             }
 
-            // Hard altitude floor — overrides EVERY other consideration,
-            // including stall recovery. Better to clip a stall than the
-            // terrain. Static helper for testability.
+            // Hard altitude floor — overrides EVERY other consideration
+            // except STALL+FLOOR-escape-to-Climb above. Better to clip a
+            // stall than the terrain.
             desired = ApplyAltitudeFloor(desired, altitude, altitudeFloorAGL, altitudeFloorElevatorMin);
-            _diagAltitudeFloor = altitude < altitudeFloorAGL;
+            _diagAltitudeFloor = isBelowFloor;
             return desired;
         }
 
@@ -224,6 +261,16 @@ namespace AcesOverTheLines.AI
 
         void UpdateStateTransitions()
         {
+            // Climb is a hard interrupt — it can fire from any state.
+            if (_state != State.Climb && _rb != null
+                && ShouldEnterClimb(
+                    _rb.position.y, _rb.linearVelocity.y, _excessDescentTime,
+                    climbEntryAltitudeM, climbEntryDescentRateMs, climbEntryDescentSustainS))
+            {
+                TransitionIfChanged(State.Climb);
+                return;
+            }
+
             if (target == null) { TransitionIfChanged(State.Patrol); return; }
 
             float range = Vector3.Distance(target.position, _rb.position);
@@ -231,6 +278,15 @@ namespace AcesOverTheLines.AI
 
             switch (_state)
             {
+                case State.Climb:
+                    // Exit Climb when high enough AND actually climbing.
+                    if (_rb != null
+                        && ShouldExitClimb(_rb.position.y, _rb.linearVelocity.y, climbExitAltitudeM))
+                    {
+                        TransitionIfChanged(State.Patrol);
+                    }
+                    break;
+
                 case State.Patrol:
                 case State.Search:
                     if (range < visualRangeM && bearing < frontHemisphereDeg)
@@ -238,7 +294,19 @@ namespace AcesOverTheLines.AI
                     break;
 
                 case State.Engage:
-                    if (ShouldDisengage()) TransitionIfChanged(State.Disengage);
+                    // Altitude-bleed-aware abandon: if we've lost too much
+                    // altitude or are descending too fast, break off into
+                    // Climb instead of committing further.
+                    if (_rb != null
+                        && (_engageEntryAltitude - _rb.position.y > engageAbandonAltitudeDropM
+                            || _rb.linearVelocity.y < -engageAbandonDescentRateMs))
+                    {
+                        TransitionIfChanged(State.Climb);
+                    }
+                    else if (ShouldDisengage())
+                    {
+                        TransitionIfChanged(State.Disengage);
+                    }
                     break;
 
                 case State.Evade:
@@ -262,6 +330,9 @@ namespace AcesOverTheLines.AI
             _state = newState;
             _stateEnteredTime = Time.time;
             _noFiringSolutionTime = 0f;
+            _excessDescentTime = 0f;
+            if (newState == State.Engage && _rb != null)
+                _engageEntryAltitude = _rb.position.y;
         }
 
         // ============================================================
@@ -275,10 +346,27 @@ namespace AcesOverTheLines.AI
                 case State.Engage:    return DoEngage();
                 case State.Evade:     return DoEvade();
                 case State.Disengage: return DoDisengage();
+                case State.Climb:     return DoClimb();
                 case State.Patrol:
                 case State.Search:
                 default:              return DoPatrol();
             }
+        }
+
+        // Climb: steady wings-level pull-up at full throttle. Used both as
+        // a strategic-state response (low altitude / sustained descent /
+        // altitude-bleed abandon from Engage) and as the safe fallback
+        // when STALL + FLOOR would otherwise produce contradictory inputs.
+        ControlInput DoClimb()
+        {
+            return new ControlInput
+            {
+                Elevator = climbElevator,
+                Aileron = 0.0,
+                Rudder = 0.0,
+                Throttle = 1.0,
+                Fire = false,
+            };
         }
 
         ControlInput DoPatrol()
@@ -499,6 +587,25 @@ namespace AcesOverTheLines.AI
         public static bool ShouldFire(float deflectionDeg, float rangeM, float maxDeflectionDeg, float maxRangeM, bool burstOn)
         {
             return burstOn && deflectionDeg < maxDeflectionDeg && rangeM < maxRangeM;
+        }
+
+        // Climb-entry decision: below the entry altitude (hard trigger) OR
+        // sustained excess descent rate (proactive trigger). Tested in
+        // isolation by the AI tests.
+        public static bool ShouldEnterClimb(
+            float altitudeAGL, float verticalVelocityMs, float excessDescentSustainS,
+            float entryAltitudeM, float entryDescentRateMs, float entryDescentSustainS)
+        {
+            if (altitudeAGL < entryAltitudeM) return true;
+            if (verticalVelocityMs < -entryDescentRateMs && excessDescentSustainS > entryDescentSustainS) return true;
+            return false;
+        }
+
+        // Climb-exit decision: above the exit altitude AND already climbing.
+        // Both conditions matter — exit only when actually gaining alt.
+        public static bool ShouldExitClimb(float altitudeAGL, float verticalVelocityMs, float exitAltitudeM)
+        {
+            return altitudeAGL > exitAltitudeM && verticalVelocityMs > 0f;
         }
 
         // Force minimum elevator (pull-up) when below the hard floor and

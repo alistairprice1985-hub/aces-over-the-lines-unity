@@ -209,6 +209,96 @@ namespace AcesOverTheLines.AI.Tests
             Assert.AreEqual(-0.2, output.Aileron, 1e-9);
         }
 
+        // ---- Climb state (Stage 6 tuning round 3) ----
+
+        [Test]
+        public void AltitudeBelow600mTransitionsToClimb()
+        {
+            // Hard altitude trigger: below entry altitude → Climb regardless
+            // of descent rate.
+            Assert.IsTrue(AIController.ShouldEnterClimb(
+                altitudeAGL: 400f, verticalVelocityMs: 5f, excessDescentSustainS: 0f,
+                entryAltitudeM: 600f, entryDescentRateMs: 30f, entryDescentSustainS: 2f));
+        }
+
+        [Test]
+        public void SustainedSteepDescentTriggersClimbAboveAltitudeFloor()
+        {
+            // High altitude but descending fast for 2.5s → Climb triggers
+            // proactively before the AI bleeds through the floor.
+            Assert.IsTrue(AIController.ShouldEnterClimb(
+                altitudeAGL: 800f, verticalVelocityMs: -45f, excessDescentSustainS: 2.5f,
+                entryAltitudeM: 600f, entryDescentRateMs: 30f, entryDescentSustainS: 2f));
+        }
+
+        [Test]
+        public void BriefDescentDoesNotTriggerClimb()
+        {
+            // Steep descent for only 1s — not sustained long enough to fire
+            // the proactive climb trigger.
+            Assert.IsFalse(AIController.ShouldEnterClimb(
+                altitudeAGL: 800f, verticalVelocityMs: -45f, excessDescentSustainS: 1.0f,
+                entryAltitudeM: 600f, entryDescentRateMs: 30f, entryDescentSustainS: 2f));
+        }
+
+        [Test]
+        public void HighAltitudeAndPositiveClimbRateExitsClimb()
+        {
+            // Above exit altitude AND climbing → exit Climb to Patrol.
+            Assert.IsTrue(AIController.ShouldExitClimb(
+                altitudeAGL: 1100f, verticalVelocityMs: 5f, exitAltitudeM: 1000f));
+        }
+
+        [Test]
+        public void HighAltitudeButStillDescendingHoldsClimb()
+        {
+            // Above exit altitude but still descending → keep climbing
+            // (don't exit prematurely).
+            Assert.IsFalse(AIController.ShouldExitClimb(
+                altitudeAGL: 1100f, verticalVelocityMs: -5f, exitAltitudeM: 1000f));
+        }
+
+        [Test]
+        public void LowAltitudeAndPositiveClimbRateDoesNotExitClimb()
+        {
+            // Climbing but not high enough yet → stay in Climb.
+            Assert.IsFalse(AIController.ShouldExitClimb(
+                altitudeAGL: 900f, verticalVelocityMs: 5f, exitAltitudeM: 1000f));
+        }
+    }
+}
+
+namespace AcesOverTheLines.Aircraft.Tests
+{
+    using NUnit.Framework;
+    using AcesOverTheLines.Aircraft;
+
+    // ---- Air-to-air collision damage tiers (Stage 6 tuning round 3) ----
+    public class AirToAirCollisionTests
+    {
+        [Test]
+        public void LowRelSpeedYieldsFortyPercentDamage()
+        {
+            Assert.AreEqual(0.40, AirToAirCollisionSystem.CollisionDamageFraction(20f), 1e-9);
+            Assert.AreEqual(0.40, AirToAirCollisionSystem.CollisionDamageFraction(29.9f), 1e-9);
+        }
+
+        [Test]
+        public void MediumRelSpeedYieldsEightyPercentDamage()
+        {
+            Assert.AreEqual(0.80, AirToAirCollisionSystem.CollisionDamageFraction(30f), 1e-9);
+            Assert.AreEqual(0.80, AirToAirCollisionSystem.CollisionDamageFraction(59.9f), 1e-9);
+        }
+
+        [Test]
+        public void HighRelSpeedYieldsOneHundredFiftyPercentDamage()
+        {
+            Assert.AreEqual(1.50, AirToAirCollisionSystem.CollisionDamageFraction(60f), 1e-9);
+            // Head-on at 100 m/s combined relative velocity → catastrophic.
+            Assert.AreEqual(1.50, AirToAirCollisionSystem.CollisionDamageFraction(100f), 1e-9);
+            Assert.AreEqual(1.50, AirToAirCollisionSystem.CollisionDamageFraction(250f), 1e-9);
+        }
+
         // ---- Energy management ----
 
         [Test]
