@@ -164,6 +164,22 @@ namespace AcesOverTheLines.Aircraft
                 });
             colorOverLifetime.color = gradient;
 
+            // URP fix (Stage 4j fixup): AddComponent<ParticleSystem> at
+            // runtime gives the renderer Unity's legacy Default-Particle
+            // material, which falls back to magenta-pink under URP.
+            // Construct a URP/Particles/Unlit material with alpha-blended
+            // transparency so dark grey smoke reads correctly against the
+            // sky (additive would brighten the screen — wrong for smoke).
+            var smokeRenderer = _smoke.GetComponent<ParticleSystemRenderer>();
+            var shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
+            if (shader != null)
+            {
+                var mat = new Material(shader);
+                UrpMaterialUtils.ConfigureUrpParticleAlphaBlended(mat);
+                mat.color = main.startColor.color;
+                smokeRenderer.material = mat;
+            }
+
             _smoke.Stop(false, ParticleSystemStopBehavior.StopEmitting);
         }
 

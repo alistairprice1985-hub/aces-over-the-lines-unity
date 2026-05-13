@@ -121,16 +121,18 @@ namespace AcesOverTheLines.Weapons
             sizeOverLifetime.size = new ParticleSystem.MinMaxCurve(1f, shrink);
 
             // Additive blend renderer + on-top draw so the flash isn't
-            // occluded by fuselage geometry.
+            // occluded by fuselage geometry. URP particle shaders default
+            // to Opaque (queue 2000, src=One/dst=Zero, zwrite=1) when
+            // created at runtime — that renders untextured particle quads
+            // as the magenta error fallback. Explicitly configure
+            // transparent + additive after creation.
             var renderer = _muzzleFlash.GetComponent<ParticleSystemRenderer>();
             renderer.sortingOrder = 999;
-            // Material: use a simple additive default. If URP particle
-            // shader isn't available, fall back to whatever Unity provides.
             var shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
-            if (shader == null) shader = Shader.Find("Particles/Standard Unlit");
             if (shader != null)
             {
                 var mat = new Material(shader);
+                UrpMaterialUtils.ConfigureUrpParticleAdditive(mat);
                 mat.color = main.startColor.color;
                 renderer.material = mat;
             }
@@ -175,10 +177,10 @@ namespace AcesOverTheLines.Weapons
             var renderer = _sparks.GetComponent<ParticleSystemRenderer>();
             renderer.sortingOrder = 1000;
             var shader = Shader.Find("Universal Render Pipeline/Particles/Unlit");
-            if (shader == null) shader = Shader.Find("Particles/Standard Unlit");
             if (shader != null)
             {
                 var mat = new Material(shader);
+                UrpMaterialUtils.ConfigureUrpParticleAdditive(mat);
                 mat.color = main.startColor.color;
                 renderer.material = mat;
             }
