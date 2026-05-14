@@ -71,6 +71,7 @@ namespace AcesOverTheLines.AI
         [SerializeField] float patrolThrottle = 0.7f;
         [SerializeField] float patrolTargetAltitudeM = 1200f;
         [SerializeField] float patrolAltitudeGain = 0.001f;
+        [SerializeField] float patrolAltitudeDampingGain = 0.005f;
         [SerializeField] float patrolElevatorClamp = 0.15f;
 
         // Climb state thresholds. Climb can hard-interrupt any other state
@@ -402,16 +403,16 @@ namespace AcesOverTheLines.AI
 
         ControlInput DoPatrol()
         {
-            // Proportional altitude hold around patrolTargetAltitudeM.
-            // Neutral elevator is not this airframe's level-flight trim
-            // attitude (see Stage 4f-2 trim analysis), so an on/off
-            // threshold bled altitude monotonically once above the climb
-            // band.
+            // PD altitude hold around patrolTargetAltitudeM. The D term
+            // opposes vertical velocity directly and is what damps the
+            // ±90m / 30s oscillation a pure-P controller produced once
+            // it had any altitude error to act on.
             double elevator = 0.0;
             if (_rb != null)
             {
                 float elevError = patrolTargetAltitudeM - _rb.position.y;
-                elevator = Mathf.Clamp(elevError * patrolAltitudeGain,
+                float dampingTerm = _rb.linearVelocity.y * patrolAltitudeDampingGain;
+                elevator = Mathf.Clamp(elevError * patrolAltitudeGain - dampingTerm,
                                        -patrolElevatorClamp, patrolElevatorClamp);
             }
             // Energy management: drop nose if speed is too low.
@@ -438,12 +439,16 @@ namespace AcesOverTheLines.AI
             Vector3 toLeadBody = Quaternion.Inverse(_rb.rotation) * toLeadWorld;
 
             // Body frame: +x forward, +y up, +z right (JS sim convention).
-            // Elevator + → pitch up (target above body x-y plane → toLeadBody.y > 0).
-            // Aileron  + → roll right (target right of body → toLeadBody.z > 0).
-            double elevator = Mathf.Clamp((float)toLeadBody.y * 3f, -1f, 1f);
-            // Roll cap: don't over-bank trying to keep aim. The AI commits to
-            // smoother turns it can recover from.
-            double aileron  = Mathf.Clamp((float)toLeadBody.z * 3f, -engageRollCap, engageRollCap);
+            // leadDir.y/z are sin(pitch error) / sin(yaw error) once the
+            // direction is unit-length. Gain 3 saturated full deflection
+            // at sin = 0.33 (~19°), causing the catastrophic dive when
+            // the AI entered Engage with the target below its nose.
+            // Gain 1.5 saturates at sin = 0.67 (~42° pitch error) and
+            // gain 2 at sin = 0.5 (~30° yaw error) — aggressive enough
+            // for pursuit, not for small corrections.
+            Vector3 leadDir = toLeadBody.normalized;
+            double elevator = Mathf.Clamp((float)leadDir.y * 1.5f, -1f, 1f);
+            double aileron  = Mathf.Clamp((float)leadDir.z * 2f, -engageRollCap, engageRollCap);
             double rudder   = 0.0;
 
             // Coordinated-turn compensation: a banked wing's vertical lift

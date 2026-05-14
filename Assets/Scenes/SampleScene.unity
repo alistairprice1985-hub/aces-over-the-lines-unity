@@ -800,6 +800,7 @@ MonoBehaviour:
   patrolThrottle: 0.7
   patrolTargetAltitudeM: 1200
   patrolAltitudeGain: 0.001
+  patrolAltitudeDampingGain: 0.005
   patrolElevatorClamp: 0.15
   climbEntryAltitudeM: 600
   climbExitAltitudeM: 1000
