@@ -113,6 +113,7 @@ namespace AcesOverTheLines.AI
         float _stallRecoveryTimer;
         float _excessDescentTime;     // accumulator for sustained-descent climb trigger
         float _engageEntryAltitude;   // captured on entering Engage; used for altitude-bleed check
+        float _lastCmdLogTime = -10f; // diagnostic throttle for control-command logging
 
         // Diagnostic state cached per-tick for the overlay.
         float _diagRange;
@@ -189,6 +190,16 @@ namespace AcesOverTheLines.AI
             }
             _diagThrottle = desired.Throttle;
             if (desired.Fire) _lastFireTime = Time.time;
+
+            // Throttled control-command log (0.5 Hz, gated on the same
+            // logStateTransitions flag) so dwell-time bands of stable
+            // commands stay greppable in the editor console.
+            if (logStateTransitions && Time.time - _lastCmdLogTime >= 0.5f)
+            {
+                _lastCmdLogTime = Time.time;
+                float speed = _rb != null ? _rb.linearVelocity.magnitude : 0f;
+                Debug.Log($"[AI-CMD] state={_state}  elev={_smoothedElevator:F2}  aile={_smoothedAileron:F2}  rud={_smoothedRudder:F2}  thr={desired.Throttle:F2}  alt={_diagAltitude:F0}  vy={_rb?.linearVelocity.y ?? 0f:F1}  speed={speed:F1}");
+            }
 
             return new ControlInput
             {

@@ -769,7 +769,7 @@ MonoBehaviour:
   target: {fileID: 1110500287}
   decisionRateHz: 5
   showAIDebug: 1
-  logStateTransitions: 0
+  logStateTransitions: 1
   visualRangeM: 1000
   closeRangeM: 300
   frontHemisphereDeg: 60

@@ -99,6 +99,10 @@ namespace AcesOverTheLines.Weapons
             var go = new GameObject("MuzzleFlash");
             go.transform.SetParent(transform, worldPositionStays: false);
             _muzzleFlash = go.AddComponent<ParticleSystem>();
+            // AddComponent<ParticleSystem>() auto-plays by default; stop +
+            // clear before mutating MainModule.duration to avoid the "can't
+            // change duration while playing" runtime warning.
+            _muzzleFlash.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
 
             var main = _muzzleFlash.main;
             main.duration = 1f;
@@ -145,6 +149,7 @@ namespace AcesOverTheLines.Weapons
             var go = new GameObject("HitSparks");
             go.transform.SetParent(transform, worldPositionStays: false);
             _sparks = go.AddComponent<ParticleSystem>();
+            _sparks.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
 
             var main = _sparks.main;
             main.duration = 1f;
