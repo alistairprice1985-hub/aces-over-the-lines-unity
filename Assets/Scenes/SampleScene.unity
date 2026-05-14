@@ -774,6 +774,9 @@ MonoBehaviour:
   closeRangeM: 300
   frontHemisphereDeg: 60
   engageRollCap: 1
+  engageCoordTurnAileronThreshold: 0.5
+  engageCoordTurnBankScale: 1
+  engageCoordTurnElevatorScale: 0.5
   farFireRangeM: 300
   farFireDeflectionDeg: 10
   closeFireRangeM: 100
@@ -795,7 +798,9 @@ MonoBehaviour:
   stallMarginX: 2
   stallRecoveryDurationS: 2
   patrolThrottle: 0.7
-  patrolMinAltitudeM: 800
+  patrolTargetAltitudeM: 1200
+  patrolAltitudeGain: 0.001
+  patrolElevatorClamp: 0.15
   climbEntryAltitudeM: 600
   climbExitAltitudeM: 1000
   climbEntryDescentRateMs: 30

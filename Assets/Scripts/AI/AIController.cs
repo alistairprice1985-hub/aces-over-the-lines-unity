@@ -34,6 +34,9 @@ namespace AcesOverTheLines.AI
         [SerializeField] float closeRangeM = 300f;       // throttle modulation switch
         [SerializeField] float frontHemisphereDeg = 60f;
         [SerializeField] float engageRollCap = 1.0f;     // full bank authority above the low-alt clamp band
+        [SerializeField] float engageCoordTurnAileronThreshold = 0.5f;
+        [SerializeField] float engageCoordTurnBankScale = 1.0f;
+        [SerializeField] float engageCoordTurnElevatorScale = 0.5f;
 
         // Three firing windows (any matching window fires when burst is on).
         // Far window: medium-range with moderate aim discipline.
@@ -66,7 +69,9 @@ namespace AcesOverTheLines.AI
         [SerializeField] float stallMarginX = 2.0f;             // recovery triggers below this × stall
         [SerializeField] float stallRecoveryDurationS = 2.0f;
         [SerializeField] float patrolThrottle = 0.7f;
-        [SerializeField] float patrolMinAltitudeM = 800f;
+        [SerializeField] float patrolTargetAltitudeM = 1200f;
+        [SerializeField] float patrolAltitudeGain = 0.001f;
+        [SerializeField] float patrolElevatorClamp = 0.15f;
 
         // Climb state thresholds. Climb can hard-interrupt any other state
         // when the AI is below the entry altitude OR descending too fast
@@ -397,11 +402,17 @@ namespace AcesOverTheLines.AI
 
         ControlInput DoPatrol()
         {
-            // Cruise level. Climb gently if below patrol altitude.
+            // Proportional altitude hold around patrolTargetAltitudeM.
+            // Neutral elevator is not this airframe's level-flight trim
+            // attitude (see Stage 4f-2 trim analysis), so an on/off
+            // threshold bled altitude monotonically once above the climb
+            // band.
             double elevator = 0.0;
-            if (_rb != null && _rb.position.y < patrolMinAltitudeM)
+            if (_rb != null)
             {
-                elevator = 0.15; // nose-up to climb
+                float elevError = patrolTargetAltitudeM - _rb.position.y;
+                elevator = Mathf.Clamp(elevError * patrolAltitudeGain,
+                                       -patrolElevatorClamp, patrolElevatorClamp);
             }
             // Energy management: drop nose if speed is too low.
             if (_rb != null && _rb.linearVelocity.magnitude < 1.5f * stallSpeedV0Ms)
@@ -434,6 +445,20 @@ namespace AcesOverTheLines.AI
             // smoother turns it can recover from.
             double aileron  = Mathf.Clamp((float)toLeadBody.z * 3f, -engageRollCap, engageRollCap);
             double rudder   = 0.0;
+
+            // Coordinated-turn compensation: a banked wing's vertical lift
+            // component falls to L·cos(bank), so a hard turn without extra
+            // elevator sinks. Approximate bank from commanded |aileron| and
+            // add 0.5× of the load-factor correction (n = 1/cos(φ)) above a
+            // 0.5 aileron threshold. Round 4c logs showed −46 m/s vy peaks
+            // in hard banks; this term reins them in.
+            if (Mathf.Abs((float)aileron) > engageCoordTurnAileronThreshold)
+            {
+                float bankRad = Mathf.Abs((float)aileron) * engageCoordTurnBankScale;
+                float extraElevator =
+                    (1f / Mathf.Cos(bankRad) - 1f) * engageCoordTurnElevatorScale;
+                elevator = Mathf.Clamp((float)(elevator + extraElevator), -1f, 1f);
+            }
 
             // Throttle: full when far, reduce to 0.5 when closing inside
             // closeRange so we don't overshoot.
