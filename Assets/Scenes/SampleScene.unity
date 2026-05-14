@@ -769,10 +769,11 @@ MonoBehaviour:
   target: {fileID: 1110500287}
   decisionRateHz: 5
   showAIDebug: 1
+  logStateTransitions: 0
   visualRangeM: 1000
   closeRangeM: 300
   frontHemisphereDeg: 60
-  engageRollCap: 0.7
+  engageRollCap: 1
   farFireRangeM: 300
   farFireDeflectionDeg: 10
   closeFireRangeM: 100
@@ -800,14 +801,14 @@ MonoBehaviour:
   climbEntryDescentRateMs: 30
   climbEntryDescentSustainS: 2
   climbElevator: 0.6
-  engageAbandonAltitudeDropM: 300
-  engageAbandonDescentRateMs: 30
+  engageAbandonAltitudeDropM: 500
+  engageAbandonDescentRateMs: 45
   altitudeFloorAGL: 250
   altitudeFloorElevatorMin: 0.8
   lowAltitudeThresholdM: 500
   lowAltElevatorMin: 0
   lowAltElevatorMax: 0.5
-  lowAltAileronCap: 0.4
+  lowAltAileronCap: 0.7
 --- !u!114 &567308686
 MonoBehaviour:
   m_ObjectHideFlags: 0

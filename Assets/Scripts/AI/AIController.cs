@@ -24,12 +24,16 @@ namespace AcesOverTheLines.AI
         [SerializeField] Transform target;
         [SerializeField] float decisionRateHz = 5f;
         [SerializeField] bool showAIDebug = true;
+        // Diagnostic: log every state machine transition with range, altitude,
+        // descent rate, and dwell time. Public so PlayMode runs can toggle
+        // it without recompile; default off to avoid log spam in production.
+        public bool logStateTransitions = false;
 
         // Engagement geometry thresholds.
         [SerializeField] float visualRangeM = 1000f;
         [SerializeField] float closeRangeM = 300f;       // throttle modulation switch
         [SerializeField] float frontHemisphereDeg = 60f;
-        [SerializeField] float engageRollCap = 0.7f;     // don't over-bank trying to keep aim
+        [SerializeField] float engageRollCap = 1.0f;     // full bank authority above the low-alt clamp band
 
         // Three firing windows (any matching window fires when burst is on).
         // Far window: medium-range with moderate aim discipline.
@@ -76,8 +80,8 @@ namespace AcesOverTheLines.AI
         // Engage altitude-bleed limits. If the AI loses too much altitude
         // or starts descending too fast WHILE engaging, it abandons the
         // pursuit (transitions to Climb) instead of committing further.
-        [SerializeField] float engageAbandonAltitudeDropM = 300f;
-        [SerializeField] float engageAbandonDescentRateMs = 30f;
+        [SerializeField] float engageAbandonAltitudeDropM = 500f;
+        [SerializeField] float engageAbandonDescentRateMs = 45f;
 
         // Hard altitude floor — never fly into the ground for ANY manoeuvre.
         [SerializeField] float altitudeFloorAGL = 250f;
@@ -90,7 +94,7 @@ namespace AcesOverTheLines.AI
         [SerializeField] float lowAltitudeThresholdM = 500f;
         [SerializeField] float lowAltElevatorMin = 0.0f;   // no commanded dive in low band
         [SerializeField] float lowAltElevatorMax = 0.5f;   // no extreme pull either
-        [SerializeField] float lowAltAileronCap = 0.4f;    // gentle banks only
+        [SerializeField] float lowAltAileronCap = 0.7f;    // firmer banks in the 250–500m band
 
         // Control smoothing — same rate as FlightInput's 250 ms ramp.
         const double RAMP_TIME_S = 0.25;
@@ -327,12 +331,23 @@ namespace AcesOverTheLines.AI
         void TransitionIfChanged(State newState)
         {
             if (_state == newState) return;
+            var prevState = _state;
+            float elapsedInPrev = Time.time - _stateEnteredTime;
             _state = newState;
             _stateEnteredTime = Time.time;
             _noFiringSolutionTime = 0f;
             _excessDescentTime = 0f;
             if (newState == State.Engage && _rb != null)
                 _engageEntryAltitude = _rb.position.y;
+
+            if (logStateTransitions)
+            {
+                float range = (target != null && _rb != null)
+                    ? Vector3.Distance(target.position, _rb.position) : -1f;
+                float altitude = _rb != null ? _rb.position.y : 0f;
+                float vy = _rb != null ? _rb.linearVelocity.y : 0f;
+                Debug.Log($"[AI] {prevState} → {newState}  range={range:F0}m  alt={altitude:F0}m  vy={vy:F1}m/s  dwelled={elapsedInPrev:F2}s");
+            }
         }
 
         // ============================================================
