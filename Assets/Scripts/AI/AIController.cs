@@ -69,7 +69,7 @@ namespace AcesOverTheLines.AI
         [SerializeField] float stallMarginX = 2.0f;             // recovery triggers below this × stall
         [SerializeField] float stallRecoveryDurationS = 2.0f;
         [SerializeField] float patrolThrottle = 0.7f;
-        [SerializeField] float patrolTargetAltitudeM = 1200f;
+        [SerializeField] float patrolTargetAltitudeM = 1000f;
         [SerializeField] float patrolAltitudeGain = 0.001f;
         [SerializeField] float patrolAltitudeDampingGain = 0.005f;
         [SerializeField] float patrolElevatorClamp = 0.15f;
@@ -420,7 +420,23 @@ namespace AcesOverTheLines.AI
             {
                 elevator = -0.20;
             }
-            return new ControlInput { Elevator = elevator, Throttle = patrolThrottle };
+            // Target-tracking aileron: if the player is within 1.5×visualRange,
+            // bank gently toward them. Cap at 0.5 so Patrol stays patrol-shaped
+            // (cruise + orient) rather than promoting itself into pursuit —
+            // Engage's 1.0 cap is the committed-attack regime.
+            double aileron = 0.0;
+            if (target != null && _rb != null)
+            {
+                Vector3 toTargetWorld = target.position - _rb.position;
+                float trackRange = visualRangeM * 1.5f;
+                if (toTargetWorld.sqrMagnitude < trackRange * trackRange)
+                {
+                    Vector3 toTargetBody = Quaternion.Inverse(_rb.rotation) * toTargetWorld;
+                    Vector3 toTargetDir = toTargetBody.normalized;
+                    aileron = Mathf.Clamp((float)toTargetDir.z * 1.5f, -0.5f, 0.5f);
+                }
+            }
+            return new ControlInput { Elevator = elevator, Aileron = aileron, Throttle = patrolThrottle };
         }
 
         ControlInput DoEngage()
@@ -541,7 +557,7 @@ namespace AcesOverTheLines.AI
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Range:      {_diagRange,6:F0} m"); y += LH;
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Deflection: {_diagDeflectionDeg,6:F1}°"); y += LH;
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Speed:      {_diagSpeed,6:F1} m/s"); y += LH;
-            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Altitude:   {_diagAltitude,6:F0} m"); y += LH;
+            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Altitude:   {_diagAltitude * 3.28084f,6:F0} ft"); y += LH;
             bool firedRecently = Time.time - _lastFireTime < 1.0f;
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Throttle:   {_diagThrottle,6:F2}   Fire: {(firedRecently ? "●" : "○")}"); y += LH;
             string overrides = (_diagStallRecovery ? "STALL " : "") + (_diagAltitudeFloor ? "FLOOR" : "");

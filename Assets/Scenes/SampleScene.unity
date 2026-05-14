@@ -734,7 +734,7 @@ Transform:
   m_GameObject: {fileID: 567308681}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 1, z: 0, w: -0.00000004371139}
-  m_LocalPosition: {x: 500, y: 1200, z: 0}
+  m_LocalPosition: {x: 500, y: 1000, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children:
@@ -798,7 +798,7 @@ MonoBehaviour:
   stallMarginX: 2
   stallRecoveryDurationS: 2
   patrolThrottle: 0.7
-  patrolTargetAltitudeM: 1200
+  patrolTargetAltitudeM: 1000
   patrolAltitudeGain: 0.001
   patrolAltitudeDampingGain: 0.005
   patrolElevatorClamp: 0.15
