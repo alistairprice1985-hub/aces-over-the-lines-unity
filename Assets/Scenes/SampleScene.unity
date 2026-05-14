@@ -193,6 +193,19 @@ Transform:
   m_CorrespondingSourceObject: {fileID: 2148695980663936859, guid: d3c8853a7bce1fa4e927846a1f8a84c5, type: 3}
   m_PrefabInstance: {fileID: 126668481}
   m_PrefabAsset: {fileID: 0}
+--- !u!134 &217879242
+PhysicsMaterial:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: 
+  serializedVersion: 2
+  m_DynamicFriction: 0.6
+  m_StaticFriction: 0.6
+  m_Bounciness: 0
+  m_FrictionCombine: 0
+  m_BounceCombine: 0
 --- !u!1 &330585543
 GameObject:
   m_ObjectHideFlags: 0
@@ -955,7 +968,7 @@ MeshCollider:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 714242763}
-  m_Material: {fileID: 0}
+  m_Material: {fileID: 217879242}
   m_IncludeLayers:
     serializedVersion: 2
     m_Bits: 0
@@ -988,7 +1001,7 @@ Transform:
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 100, y: 1, z: 100}
+  m_LocalScale: {x: 2000, y: 1, z: 2000}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
