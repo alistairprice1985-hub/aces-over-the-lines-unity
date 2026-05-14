@@ -254,10 +254,13 @@ namespace AcesOverTheLines.AI
             {
                 _stallRecoveryTimer -= (float)dt;
                 _diagStallRecovery = true;
+                // Roll wings-level concurrently with the forced dive.
+                // Diving while banked just deepens the spiral; recovery
+                // requires the velocity vector pointed down, not sideways.
                 desired = new ControlInput
                 {
                     Elevator = -0.30,
-                    Aileron = 0.0,
+                    Aileron = ComputeRollLevelAileron(),
                     Rudder = 0.0,
                     Throttle = 1.0,
                     Fire = false,
@@ -385,16 +388,35 @@ namespace AcesOverTheLines.AI
             }
         }
 
-        // Climb: steady wings-level pull-up at full throttle. Used both as
-        // a strategic-state response (low altitude / sustained descent /
-        // altitude-bleed abandon from Engage) and as the safe fallback
-        // when STALL + FLOOR would otherwise produce contradictory inputs.
+        // Computes the aileron command that rolls the aircraft toward
+        // wings-level, regardless of current bank. World-up transformed
+        // into body frame is (0, 1, 0) when level; if the right wing is
+        // down, the projection picks up a negative z component (right is
+        // +z in our body convention) and we need positive aileron (roll
+        // right → right wing up) to recover. Aileron sign therefore
+        // matches the sign of worldUpInBody.z. Gain 2 saturates fast
+        // because a banked or inverted aircraft is a safety-critical
+        // attitude, not a tracking nicety.
+        double ComputeRollLevelAileron()
+        {
+            if (_rb == null) return 0.0;
+            Vector3 worldUpInBody = Quaternion.Inverse(_rb.rotation) * Vector3.up;
+            return Mathf.Clamp((float)worldUpInBody.z * 2.0f, -1.0f, 1.0f);
+        }
+
+        // Climb: roll wings-level, then steady nose-up pull at full
+        // throttle. Used both as a strategic-state response (low altitude
+        // / sustained descent / altitude-bleed abandon from Engage) and
+        // as the safe fallback when STALL + FLOOR would otherwise produce
+        // contradictory inputs. The wings-level aileron is critical —
+        // climbElevator is body-frame, so if the aircraft is inverted the
+        // "nose-up" command pitches the nose INTO the ground.
         ControlInput DoClimb()
         {
             return new ControlInput
             {
                 Elevator = climbElevator,
-                Aileron = 0.0,
+                Aileron = ComputeRollLevelAileron(),
                 Rudder = 0.0,
                 Throttle = 1.0,
                 Fire = false,
@@ -421,9 +443,11 @@ namespace AcesOverTheLines.AI
                 elevator = -0.20;
             }
             // Target-tracking aileron: if the player is within 1.5×visualRange,
-            // bank gently toward them. Cap at 0.5 so Patrol stays patrol-shaped
-            // (cruise + orient) rather than promoting itself into pursuit —
-            // Engage's 1.0 cap is the committed-attack regime.
+            // bank gently toward them. Cap ±0.25 (down from ±0.5 in Round
+            // 4g) so Patrol can't induce the deep banks that left the AI
+            // inverted on Climb entry. Gain reduced 1.5 → 1.0 so the
+            // saturation point shifts to a wider angle for smoother
+            // tracking.
             double aileron = 0.0;
             if (target != null && _rb != null)
             {
@@ -433,7 +457,7 @@ namespace AcesOverTheLines.AI
                 {
                     Vector3 toTargetBody = Quaternion.Inverse(_rb.rotation) * toTargetWorld;
                     Vector3 toTargetDir = toTargetBody.normalized;
-                    aileron = Mathf.Clamp((float)toTargetDir.z * 1.5f, -0.5f, 0.5f);
+                    aileron = Mathf.Clamp((float)toTargetDir.z * 1.0f, -0.25f, 0.25f);
                 }
             }
             return new ControlInput { Elevator = elevator, Aileron = aileron, Throttle = patrolThrottle };
