@@ -7,16 +7,23 @@ namespace AcesOverTheLines.AI
 {
     // Basic AI opponent. Implements IFlightControlSource so AircraftController
     // discovers it the same way it discovers FlightInput; flight physics is
-    // identical between player and AI — no cheating, same rate-targeting
-    // controller, same stall behaviour, same gyro coupling.
+    // identical between player and AI — no cheating.
     //
-    // Six-state machine: Patrol → Search → Engage → Evade → Disengage (→ RTB
-    // placeholder). Strategic decisions tick at 5 Hz; control outputs are
-    // smoothed per-tick via the same rampTo helper FlightInput uses.
+    // Two-tier control architecture (Stage 6 Round 5):
+    //   * Tier 1 (this class): FSM emits a FlightSetpoint per state.
+    //   * Tier 2 (FlightStabilizer): cos(bank)-gated PIDs translate the
+    //     setpoint into a ControlInput, with rate-limited actuator output.
     //
-    // The AI sees only what AircraftEntity exposes (its own pose, velocity,
-    // component HP) plus the target's pose/velocity. It does NOT read the
-    // target's HP, ammo, or controls.
+    // The "safety override" stack from rounds 4a–4h (forced stall dive,
+    // altitude-floor pull-up, climb hard-interrupt, cos-loss elevator
+    // compensation, wings-level helper) is gone from the runtime path —
+    // they were all workarounds for an architectural defect the stabilizer
+    // now solves mathematically via the cos(bank) pitch-authority gate.
+    //
+    // The static helper functions (ApplyAltitudeFloor, ClampForLowAltitude,
+    // ShouldEnterClimb, ShouldExitClimb) are retained because their tests
+    // continue to pass and they're harmless pure-math. ShouldExitClimb
+    // is the only one still called from the live code.
     public class AIController : MonoBehaviour, IFlightControlSource
     {
         public enum State { Patrol, Search, Engage, Evade, Disengage, RTB, Climb }
@@ -31,17 +38,18 @@ namespace AcesOverTheLines.AI
 
         // Engagement geometry thresholds.
         [SerializeField] float visualRangeM = 1000f;
-        [SerializeField] float closeRangeM = 300f;       // throttle modulation switch
         [SerializeField] float frontHemisphereDeg = 60f;
-        [SerializeField] float engageRollCap = 1.0f;     // full bank authority above the low-alt clamp band
-        [SerializeField] float engageCoordTurnAileronThreshold = 0.5f;
-        [SerializeField] float engageCoordTurnBankScale = 1.0f;
-        [SerializeField] float engageCoordTurnElevatorScale = 0.5f;
+
+        // Setpoint clamps (per state).
+        [SerializeField] float engageBankClampRad  = 0.7f;  // ±40°
+        [SerializeField] float engagePitchClampRad = 0.5f;  // ±28.6°
+        [SerializeField] float engageAirspeedMs    = 60f;
+        [SerializeField] float patrolBankClampRad  = 0.3f;  // ±17.2°
+        [SerializeField] float patrolAirspeedMs    = 40f;
+        [SerializeField] float climbPitchRad       = 0.3f;
+        [SerializeField] float climbAirspeedMs     = 35f;
 
         // Three firing windows (any matching window fires when burst is on).
-        // Far window: medium-range with moderate aim discipline.
-        // Close window: short-range with tight aim (5° within 100m).
-        // Snap window: very-close pass-by burst (wider deflection allowed).
         [SerializeField] float farFireRangeM = 300f;
         [SerializeField] float farFireDeflectionDeg = 10f;
         [SerializeField] float closeFireRangeM = 100f;
@@ -59,56 +67,24 @@ namespace AcesOverTheLines.AI
         [SerializeField] float energyLowSpeedMs = 25f;
         [SerializeField] float energyLowAltitudeM = 200f;
         [SerializeField] float lostGeometrySeconds = 4f;
-        [SerializeField] float disengageNoseDownNormalised = 0.7f;
         [SerializeField] float disengageDurationS = 5f;
-        [SerializeField] float disengageAltitudeFloorM = 300f;  // below this, lateral escape only
+        [SerializeField] float disengageAltitudeFloorM = 300f;
         [SerializeField] float evadeDurationS = 3f;
 
-        // Patrol energy management.
-        [SerializeField] float stallSpeedV0Ms = 11.1f;          // matches AircraftEntity authority v0
-        [SerializeField] float stallMarginX = 2.0f;             // recovery triggers below this × stall
-        [SerializeField] float stallRecoveryDurationS = 2.0f;
-        [SerializeField] float patrolThrottle = 0.7f;
-        [SerializeField] float patrolTargetAltitudeM = 1000f;
-        [SerializeField] float patrolAltitudeGain = 0.001f;
-        [SerializeField] float patrolAltitudeDampingGain = 0.005f;
-        [SerializeField] float patrolElevatorClamp = 0.15f;
-
-        // Climb state thresholds. Climb can hard-interrupt any other state
-        // when the AI is below the entry altitude OR descending too fast
-        // for too long. Climb exits when high enough AND actually climbing.
-        [SerializeField] float climbEntryAltitudeM = 600f;
+        // Climb→Patrol exit threshold (state-machine transition, not a
+        // runtime control override).
         [SerializeField] float climbExitAltitudeM = 1000f;
-        [SerializeField] float climbEntryDescentRateMs = 30f;
-        [SerializeField] float climbEntryDescentSustainS = 2f;
-        [SerializeField] float climbElevator = 0.6f;
 
-        // Engage altitude-bleed limits. If the AI loses too much altitude
-        // or starts descending too fast WHILE engaging, it abandons the
-        // pursuit (transitions to Climb) instead of committing further.
+        // Engage tactical abandon: transitions Engage→Climb when pursuit
+        // costs too much altitude. This is a state-machine decision, not a
+        // per-tick safety override — it stays.
         [SerializeField] float engageAbandonAltitudeDropM = 500f;
         [SerializeField] float engageAbandonDescentRateMs = 45f;
-
-        // Hard altitude floor — never fly into the ground for ANY manoeuvre.
-        [SerializeField] float altitudeFloorAGL = 250f;
-        [SerializeField] float altitudeFloorElevatorMin = 0.80f;
-
-        // Energy preservation band — between altitudeFloorAGL and this
-        // threshold, clamp commanded inputs so the AI doesn't dive or
-        // hard-bank itself into the ground. Floor override (above) wins
-        // below altitudeFloorAGL.
-        [SerializeField] float lowAltitudeThresholdM = 500f;
-        [SerializeField] float lowAltElevatorMin = 0.0f;   // no commanded dive in low band
-        [SerializeField] float lowAltElevatorMax = 0.5f;   // no extreme pull either
-        [SerializeField] float lowAltAileronCap = 0.7f;    // firmer banks in the 250–500m band
-
-        // Control smoothing — same rate as FlightInput's 250 ms ramp.
-        const double RAMP_TIME_S = 0.25;
-        const double RAMP_RATE = 1.0 / RAMP_TIME_S;
 
         AircraftController _ctrl;
         Rigidbody _rb;
         Rigidbody _targetRb;
+        FlightStabilizer _stabilizer;
 
         State _state = State.Patrol;
         float _stateEnteredTime;
@@ -116,26 +92,17 @@ namespace AcesOverTheLines.AI
         float _noFiringSolutionTime;
         float _burstTimer;
         bool _burstOn;
-        float _stallRecoveryTimer;
-        float _excessDescentTime;     // accumulator for sustained-descent climb trigger
-        float _engageEntryAltitude;   // captured on entering Engage; used for altitude-bleed check
-        float _lastCmdLogTime = -10f; // diagnostic throttle for control-command logging
+        float _engageEntryAltitude;
+        float _lastCmdLogTime = -10f;
 
-        // Diagnostic state cached per-tick for the overlay.
+        // Diagnostic state cached per-tick for the OnGUI overlay.
         float _diagRange;
         float _diagDeflectionDeg;
         float _diagSpeed;
         float _diagAltitude;
         double _diagThrottle;
         float _lastFireTime = -10f;
-        bool _diagStallRecovery;
-        bool _diagAltitudeFloor;
         int _initialAmmoTotal;
-
-        // Smoothed control outputs.
-        double _smoothedElevator;
-        double _smoothedAileron;
-        double _smoothedRudder;
 
         public State CurrentState => _state;
         public Transform Target { get => target; set { target = value; _targetRb = target != null ? target.GetComponent<Rigidbody>() : null; } }
@@ -144,6 +111,7 @@ namespace AcesOverTheLines.AI
         {
             _ctrl = GetComponent<AircraftController>();
             _rb = GetComponent<Rigidbody>();
+            _stabilizer = new FlightStabilizer();
             if (target == null)
             {
                 var playerGo = GameObject.FindWithTag("Player");
@@ -154,7 +122,6 @@ namespace AcesOverTheLines.AI
 
         void Start()
         {
-            // Cache initial ammo total once WeaponSystem is initialized.
             var ws = GetComponent<WeaponSystem>();
             if (ws != null && ws.Guns != null)
             {
@@ -165,12 +132,6 @@ namespace AcesOverTheLines.AI
 
         public ControlInput ReadControls(double dt)
         {
-            // Per-tick descent-rate accumulator for the Climb trigger.
-            if (_rb != null && _rb.linearVelocity.y < -climbEntryDescentRateMs)
-                _excessDescentTime += (float)dt;
-            else
-                _excessDescentTime = 0f;
-
             // Strategic-level decisions tick at 5 Hz.
             if (Time.time - _lastDecisionTime >= 1f / decisionRateHz)
             {
@@ -178,15 +139,13 @@ namespace AcesOverTheLines.AI
                 UpdateStateTransitions();
             }
 
-            // Per-tick burst-fire timer + control output.
             UpdateBurst((float)dt);
-            ControlInput desired = ComputeDesiredControls();
-            desired = ApplySafetyOverrides(desired, dt);
+            FlightSetpoint setpoint = ComputeDesiredSetpoint();
 
-            // Smooth elevator / aileron / rudder; throttle bypasses smoothing.
-            _smoothedElevator = RampTo(_smoothedElevator, desired.Elevator, dt);
-            _smoothedAileron  = RampTo(_smoothedAileron,  desired.Aileron,  dt);
-            _smoothedRudder   = RampTo(_smoothedRudder,   desired.Rudder,   dt);
+            ControlInput cmd = _rb != null
+                ? _stabilizer.Stabilize(setpoint, _rb, dt)
+                : new ControlInput { Throttle = 0.7, Fire = setpoint.Fire };
+            cmd.Fire = setpoint.Fire;
 
             // Cache diagnostic state for the OnGUI overlay.
             if (_rb != null)
@@ -194,89 +153,19 @@ namespace AcesOverTheLines.AI
                 _diagSpeed = _rb.linearVelocity.magnitude;
                 _diagAltitude = _rb.position.y;
             }
-            _diagThrottle = desired.Throttle;
-            if (desired.Fire) _lastFireTime = Time.time;
+            _diagThrottle = cmd.Throttle;
+            if (cmd.Fire) _lastFireTime = Time.time;
 
-            // Throttled control-command log (0.5 Hz, gated on the same
-            // logStateTransitions flag) so dwell-time bands of stable
-            // commands stay greppable in the editor console.
+            // Throttled per-tick log: setpoint → stabilizer output. Same
+            // 0.5 Hz cadence and logStateTransitions gate as before.
             if (logStateTransitions && Time.time - _lastCmdLogTime >= 0.5f)
             {
                 _lastCmdLogTime = Time.time;
                 float speed = _rb != null ? _rb.linearVelocity.magnitude : 0f;
-                Debug.Log($"[AI-CMD] state={_state}  elev={_smoothedElevator:F2}  aile={_smoothedAileron:F2}  rud={_smoothedRudder:F2}  thr={desired.Throttle:F2}  alt={_diagAltitude:F0}  vy={_rb?.linearVelocity.y ?? 0f:F1}  speed={speed:F1}");
+                Debug.Log($"[AI-CMD] state={_state}  set(bnk={setpoint.DesiredBankRad:F2} ptc={setpoint.DesiredPitchRad:F2} spd={setpoint.DesiredAirspeedMs:F0})  out(ail={cmd.Aileron:F2} elv={cmd.Elevator:F2} thr={cmd.Throttle:F2})  alt={_diagAltitude:F0}  vy={_rb?.linearVelocity.y ?? 0f:F1}  v={speed:F1}");
             }
 
-            return new ControlInput
-            {
-                Elevator = _smoothedElevator,
-                Aileron  = _smoothedAileron,
-                Rudder   = _smoothedRudder,
-                Throttle = desired.Throttle,
-                Fire     = desired.Fire,
-            };
-        }
-
-        // ============================================================
-        // Safety overrides — stall recovery + hard altitude floor
-        // ============================================================
-
-        ControlInput ApplySafetyOverrides(ControlInput desired, double dt)
-        {
-            if (_rb == null) return desired;
-            float speed = _rb.linearVelocity.magnitude;
-            float altitude = _rb.position.y;
-            bool isStall = speed < stallMarginX * stallSpeedV0Ms;
-            bool isBelowFloor = altitude < altitudeFloorAGL;
-
-            // Both STALL and FLOOR firing simultaneously means a dive-for-
-            // speed override would point the nose INTO terrain. Instead,
-            // escape into the Climb state: wings-level full-throttle steady
-            // pull-up is the only non-contradictory response.
-            if (isStall && isBelowFloor)
-            {
-                if (_state != State.Climb) TransitionIfChanged(State.Climb);
-                _diagStallRecovery = false;
-                _diagAltitudeFloor = true;
-                _stallRecoveryTimer = 0f; // reset so it doesn't fire spuriously after the climb
-                return DoClimb();
-            }
-
-            // Stall recovery: forced dive + full throttle for a fixed window.
-            // Triggered when speed drops below stallMarginX × stallSpeed and
-            // we're not already mid-recovery. Runs to completion even if
-            // speed climbs back early — gives a real margin before resuming.
-            if (isStall && _stallRecoveryTimer <= 0f)
-            {
-                _stallRecoveryTimer = stallRecoveryDurationS;
-            }
-            if (_stallRecoveryTimer > 0f)
-            {
-                _stallRecoveryTimer -= (float)dt;
-                _diagStallRecovery = true;
-                // Roll wings-level concurrently with the forced dive.
-                // Diving while banked just deepens the spiral; recovery
-                // requires the velocity vector pointed down, not sideways.
-                desired = new ControlInput
-                {
-                    Elevator = -0.30,
-                    Aileron = ComputeRollLevelAileron(),
-                    Rudder = 0.0,
-                    Throttle = 1.0,
-                    Fire = false,
-                };
-            }
-            else
-            {
-                _diagStallRecovery = false;
-            }
-
-            // Hard altitude floor — overrides EVERY other consideration
-            // except STALL+FLOOR-escape-to-Climb above. Better to clip a
-            // stall than the terrain.
-            desired = ApplyAltitudeFloor(desired, altitude, altitudeFloorAGL, altitudeFloorElevatorMin);
-            _diagAltitudeFloor = isBelowFloor;
-            return desired;
+            return cmd;
         }
 
         // ============================================================
@@ -285,16 +174,7 @@ namespace AcesOverTheLines.AI
 
         void UpdateStateTransitions()
         {
-            // Climb is a hard interrupt — it can fire from any state.
-            if (_state != State.Climb && _rb != null
-                && ShouldEnterClimb(
-                    _rb.position.y, _rb.linearVelocity.y, _excessDescentTime,
-                    climbEntryAltitudeM, climbEntryDescentRateMs, climbEntryDescentSustainS))
-            {
-                TransitionIfChanged(State.Climb);
-                return;
-            }
-
+            if (_rb == null) return;
             if (target == null) { TransitionIfChanged(State.Patrol); return; }
 
             float range = Vector3.Distance(target.position, _rb.position);
@@ -303,12 +183,8 @@ namespace AcesOverTheLines.AI
             switch (_state)
             {
                 case State.Climb:
-                    // Exit Climb when high enough AND actually climbing.
-                    if (_rb != null
-                        && ShouldExitClimb(_rb.position.y, _rb.linearVelocity.y, climbExitAltitudeM))
-                    {
+                    if (ShouldExitClimb(_rb.position.y, _rb.linearVelocity.y, climbExitAltitudeM))
                         TransitionIfChanged(State.Patrol);
-                    }
                     break;
 
                 case State.Patrol:
@@ -318,12 +194,12 @@ namespace AcesOverTheLines.AI
                     break;
 
                 case State.Engage:
-                    // Altitude-bleed-aware abandon: if we've lost too much
-                    // altitude or are descending too fast, break off into
-                    // Climb instead of committing further.
-                    if (_rb != null
-                        && (_engageEntryAltitude - _rb.position.y > engageAbandonAltitudeDropM
-                            || _rb.linearVelocity.y < -engageAbandonDescentRateMs))
+                    // Tactical altitude-bleed abandon: if pursuit costs too
+                    // much altitude or vy is too negative, transition to
+                    // Climb instead of pressing further. This is FSM-level
+                    // energy management, not a per-tick control override.
+                    if (_engageEntryAltitude - _rb.position.y > engageAbandonAltitudeDropM
+                        || _rb.linearVelocity.y < -engageAbandonDescentRateMs)
                     {
                         TransitionIfChanged(State.Climb);
                     }
@@ -356,9 +232,14 @@ namespace AcesOverTheLines.AI
             _state = newState;
             _stateEnteredTime = Time.time;
             _noFiringSolutionTime = 0f;
-            _excessDescentTime = 0f;
             if (newState == State.Engage && _rb != null)
                 _engageEntryAltitude = _rb.position.y;
+
+            // Reset stabilizer history on state change. Setpoint
+            // discontinuities (e.g., Patrol→Engage jumps bank from
+            // ±0.3 to ±0.7) should not smear through PID derivative
+            // and integral terms.
+            _stabilizer?.Reset();
 
             if (logStateTransitions)
             {
@@ -371,10 +252,10 @@ namespace AcesOverTheLines.AI
         }
 
         // ============================================================
-        // Per-tick control output
+        // Per-state setpoint emitters
         // ============================================================
 
-        ControlInput ComputeDesiredControls()
+        FlightSetpoint ComputeDesiredSetpoint()
         {
             switch (_state)
             {
@@ -388,67 +269,23 @@ namespace AcesOverTheLines.AI
             }
         }
 
-        // Computes the aileron command that rolls the aircraft toward
-        // wings-level, regardless of current bank. World-up transformed
-        // into body frame is (0, 1, 0) when level; if the right wing is
-        // down, the projection picks up a negative z component (right is
-        // +z in our body convention) and we need positive aileron (roll
-        // right → right wing up) to recover. Aileron sign therefore
-        // matches the sign of worldUpInBody.z. Gain 2 saturates fast
-        // because a banked or inverted aircraft is a safety-critical
-        // attitude, not a tracking nicety.
-        double ComputeRollLevelAileron()
+        FlightSetpoint DoClimb()
         {
-            if (_rb == null) return 0.0;
-            Vector3 worldUpInBody = Quaternion.Inverse(_rb.rotation) * Vector3.up;
-            return Mathf.Clamp((float)worldUpInBody.z * 2.0f, -1.0f, 1.0f);
-        }
-
-        // Climb: roll wings-level, then steady nose-up pull at full
-        // throttle. Used both as a strategic-state response (low altitude
-        // / sustained descent / altitude-bleed abandon from Engage) and
-        // as the safe fallback when STALL + FLOOR would otherwise produce
-        // contradictory inputs. The wings-level aileron is critical —
-        // climbElevator is body-frame, so if the aircraft is inverted the
-        // "nose-up" command pitches the nose INTO the ground.
-        ControlInput DoClimb()
-        {
-            return new ControlInput
+            return new FlightSetpoint
             {
-                Elevator = climbElevator,
-                Aileron = ComputeRollLevelAileron(),
-                Rudder = 0.0,
-                Throttle = 1.0,
+                DesiredBankRad    = 0.0,
+                DesiredPitchRad   = climbPitchRad,
+                DesiredAirspeedMs = climbAirspeedMs,
                 Fire = false,
             };
         }
 
-        ControlInput DoPatrol()
+        FlightSetpoint DoPatrol()
         {
-            // PD altitude hold around patrolTargetAltitudeM. The D term
-            // opposes vertical velocity directly and is what damps the
-            // ±90m / 30s oscillation a pure-P controller produced once
-            // it had any altitude error to act on.
-            double elevator = 0.0;
-            if (_rb != null)
-            {
-                float elevError = patrolTargetAltitudeM - _rb.position.y;
-                float dampingTerm = _rb.linearVelocity.y * patrolAltitudeDampingGain;
-                elevator = Mathf.Clamp(elevError * patrolAltitudeGain - dampingTerm,
-                                       -patrolElevatorClamp, patrolElevatorClamp);
-            }
-            // Energy management: drop nose if speed is too low.
-            if (_rb != null && _rb.linearVelocity.magnitude < 1.5f * stallSpeedV0Ms)
-            {
-                elevator = -0.20;
-            }
-            // Target-tracking aileron: if the player is within 1.5×visualRange,
-            // bank gently toward them. Cap ±0.25 (down from ±0.5 in Round
-            // 4g) so Patrol can't induce the deep banks that left the AI
-            // inverted on Climb entry. Gain reduced 1.5 → 1.0 so the
-            // saturation point shifts to a wider angle for smoother
-            // tracking.
-            double aileron = 0.0;
+            // Bank gently toward target if it's within sight; otherwise
+            // straight and level. The stabilizer's roll PID drives toward
+            // this bank setpoint and naturally smooths transitions.
+            double bank = 0.0;
             if (target != null && _rb != null)
             {
                 Vector3 toTargetWorld = target.position - _rb.position;
@@ -456,17 +293,23 @@ namespace AcesOverTheLines.AI
                 if (toTargetWorld.sqrMagnitude < trackRange * trackRange)
                 {
                     Vector3 toTargetBody = Quaternion.Inverse(_rb.rotation) * toTargetWorld;
-                    Vector3 toTargetDir = toTargetBody.normalized;
-                    aileron = Mathf.Clamp((float)toTargetDir.z * 1.0f, -0.25f, 0.25f);
+                    bank = Mathf.Atan2(toTargetBody.z, toTargetBody.x);
+                    bank = Mathf.Clamp((float)bank, -patrolBankClampRad, patrolBankClampRad);
                 }
             }
-            return new ControlInput { Elevator = elevator, Aileron = aileron, Throttle = patrolThrottle };
+            return new FlightSetpoint
+            {
+                DesiredBankRad    = bank,
+                DesiredPitchRad   = 0.0,
+                DesiredAirspeedMs = patrolAirspeedMs,
+                Fire = false,
+            };
         }
 
-        ControlInput DoEngage()
+        FlightSetpoint DoEngage()
         {
             if (target == null || _rb == null)
-                return new ControlInput { Throttle = patrolThrottle };
+                return new FlightSetpoint { DesiredAirspeedMs = patrolAirspeedMs };
 
             float range = Vector3.Distance(target.position, _rb.position);
             Vector3 leadPoint = ComputeLeadPoint(
@@ -476,92 +319,72 @@ namespace AcesOverTheLines.AI
                 MuzzleVelocity());
 
             Vector3 toLeadWorld = (leadPoint - _rb.position).normalized;
-            Vector3 toLeadBody = Quaternion.Inverse(_rb.rotation) * toLeadWorld;
+            Vector3 toLeadBody  = Quaternion.Inverse(_rb.rotation) * toLeadWorld;
 
-            // Body frame: +x forward, +y up, +z right (JS sim convention).
-            // leadDir.y/z are sin(pitch error) / sin(yaw error) once the
-            // direction is unit-length. Gain 3 saturated full deflection
-            // at sin = 0.33 (~19°), causing the catastrophic dive when
-            // the AI entered Engage with the target below its nose.
-            // Gain 1.5 saturates at sin = 0.67 (~42° pitch error) and
-            // gain 2 at sin = 0.5 (~30° yaw error) — aggressive enough
-            // for pursuit, not for small corrections.
-            Vector3 leadDir = toLeadBody.normalized;
-            double elevator = Mathf.Clamp((float)leadDir.y * 1.5f, -1f, 1f);
-            double aileron  = Mathf.Clamp((float)leadDir.z * 2f, -engageRollCap, engageRollCap);
-            double rudder   = 0.0;
+            // Body frame: +x forward, +y up, +z right.
+            // atan2(z, x) is the yaw angle to lead point: positive when
+            // lead is to the right → bank right (positive setpoint).
+            // atan2(y, x) is the pitch angle to lead: positive when lead
+            // is above the body x-axis → pitch up.
+            double bank  = Mathf.Atan2(toLeadBody.z, toLeadBody.x);
+            double pitch = Mathf.Atan2(toLeadBody.y, toLeadBody.x);
+            bank  = Mathf.Clamp((float)bank,  -engageBankClampRad,  engageBankClampRad);
+            pitch = Mathf.Clamp((float)pitch, -engagePitchClampRad, engagePitchClampRad);
 
-            // Coordinated-turn compensation: a banked wing's vertical lift
-            // component falls to L·cos(bank), so a hard turn without extra
-            // elevator sinks. Approximate bank from commanded |aileron| and
-            // add 0.5× of the load-factor correction (n = 1/cos(φ)) above a
-            // 0.5 aileron threshold. Round 4c logs showed −46 m/s vy peaks
-            // in hard banks; this term reins them in.
-            if (Mathf.Abs((float)aileron) > engageCoordTurnAileronThreshold)
-            {
-                float bankRad = Mathf.Abs((float)aileron) * engageCoordTurnBankScale;
-                float extraElevator =
-                    (1f / Mathf.Cos(bankRad) - 1f) * engageCoordTurnElevatorScale;
-                elevator = Mathf.Clamp((float)(elevator + extraElevator), -1f, 1f);
-            }
-
-            // Throttle: full when far, reduce to 0.5 when closing inside
-            // closeRange so we don't overshoot.
-            double throttle = range > closeRangeM ? 1.0 : 0.5;
-
-            // Track no-firing-solution timer.
+            // Multi-window firing decision (unchanged).
             float deflectionDeg = Vector3.Angle(_rb.rotation * new Vector3(1f, 0f, 0f), toLeadWorld);
             float dt = Time.fixedDeltaTime;
             if (deflectionDeg > 30f) _noFiringSolutionTime += dt;
             else _noFiringSolutionTime = Mathf.Max(0f, _noFiringSolutionTime - dt);
 
-            // Multi-window firing decision: fire if ANY window matches.
-            //   Snap   — very close pass-by burst (≤ 50m, defl < 30°).
-            //   Close  — short range, tight aim (≤ 100m, defl < 5°).
-            //   Far    — medium range, moderate aim (≤ 300m, defl < 10°).
             bool fire = ShouldFireMultiWindow(
                 deflectionDeg, range, _burstOn,
-                farFireRangeM, farFireDeflectionDeg,
+                farFireRangeM,   farFireDeflectionDeg,
                 closeFireRangeM, closeFireDeflectionDeg,
-                snapFireRangeM, snapFireDeflectionDeg);
+                snapFireRangeM,  snapFireDeflectionDeg);
 
             _diagRange = range;
             _diagDeflectionDeg = deflectionDeg;
 
-            var ctrl = new ControlInput { Elevator = elevator, Aileron = aileron, Rudder = rudder, Throttle = throttle, Fire = fire };
-
-            // Energy preservation at low altitude: cap commanded pitch + roll
-            // so the AI doesn't trade altitude it doesn't have during a
-            // pursuit turn. ApplyAltitudeFloor (in ApplySafetyOverrides) is
-            // the absolute floor below altitudeFloorAGL; this clamp is the
-            // "be careful" band above the floor.
-            if (_rb != null)
+            return new FlightSetpoint
             {
-                ctrl = ClampForLowAltitude(
-                    ctrl, _rb.position.y, lowAltitudeThresholdM,
-                    lowAltElevatorMin, lowAltElevatorMax, lowAltAileronCap);
-            }
-            return ctrl;
+                DesiredBankRad    = bank,
+                DesiredPitchRad   = pitch,
+                DesiredAirspeedMs = engageAirspeedMs,
+                Fire = fire,
+            };
         }
 
-        ControlInput DoEvade()
+        FlightSetpoint DoEvade()
         {
-            // Hard turn (bias right), drop nose, full throttle.
-            return new ControlInput { Elevator = -0.5, Aileron = 0.8, Throttle = 1.0 };
+            // Hard right turn with slight nose-down, full airspeed.
+            return new FlightSetpoint
+            {
+                DesiredBankRad    = 0.7,
+                DesiredPitchRad   = -0.2,
+                DesiredAirspeedMs = 55.0,
+            };
         }
 
-        ControlInput DoDisengage()
+        FlightSetpoint DoDisengage()
         {
-            // Low-altitude disengage: lateral escape instead of diving.
-            // Below the floor we don't have altitude to trade.
+            // Low altitude: lateral escape (no diving).
             if (_rb != null && _rb.position.y < disengageAltitudeFloorM)
             {
-                return new ControlInput { Elevator = 0.0, Aileron = 0.6, Rudder = 0.0, Throttle = 1.0, Fire = false };
+                return new FlightSetpoint
+                {
+                    DesiredBankRad    = 0.5,
+                    DesiredPitchRad   = 0.0,
+                    DesiredAirspeedMs = 55.0,
+                };
             }
-            // Standard disengage: nose-down dive, full throttle. After
-            // disengageDurationS the transition back to Search fires from
-            // UpdateStateTransitions.
-            return new ControlInput { Elevator = -disengageNoseDownNormalised, Throttle = 1.0 };
+            // Standard: dive away straight ahead.
+            return new FlightSetpoint
+            {
+                DesiredBankRad    = 0.0,
+                DesiredPitchRad   = -0.3,
+                DesiredAirspeedMs = 60.0,
+            };
         }
 
         // ============================================================
@@ -572,7 +395,7 @@ namespace AcesOverTheLines.AI
         {
             if (!showAIDebug) return;
             const int W = 240;
-            const int H = 168;
+            const int H = 150;
             const int LH = 18;
             int x = 12, y = 12;
             GUI.Box(new Rect(x, y, W, H), "AI Debug");
@@ -583,10 +406,7 @@ namespace AcesOverTheLines.AI
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Speed:      {_diagSpeed,6:F1} m/s"); y += LH;
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Altitude:   {_diagAltitude * 3.28084f,6:F0} ft"); y += LH;
             bool firedRecently = Time.time - _lastFireTime < 1.0f;
-            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Throttle:   {_diagThrottle,6:F2}   Fire: {(firedRecently ? "●" : "○")}"); y += LH;
-            string overrides = (_diagStallRecovery ? "STALL " : "") + (_diagAltitudeFloor ? "FLOOR" : "");
-            if (overrides.Length > 0)
-                GUI.Label(new Rect(x + 8, y, W - 16, LH), $"OVERRIDE:   {overrides}");
+            GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Throttle:   {_diagThrottle,6:F2}   Fire: {(firedRecently ? "●" : "○")}");
         }
 
         // ============================================================
@@ -612,7 +432,6 @@ namespace AcesOverTheLines.AI
         {
             int conditions = 0;
 
-            // 1. Ammo
             var ws = GetComponent<WeaponSystem>();
             int currentAmmo = 0;
             if (ws != null && ws.Guns != null)
@@ -620,7 +439,6 @@ namespace AcesOverTheLines.AI
             if (_initialAmmoTotal > 0 && (float)currentAmmo / _initialAmmoTotal < ammoLowFraction)
                 conditions++;
 
-            // 2. Health (any tracked component below 50 %).
             if (_ctrl != null && _ctrl.Entity != null && _ctrl.Entity.Components != null)
             {
                 foreach (var key in new[] { "engine", "pilot", "left_wing_spar", "right_wing_spar", "fuel_tank" })
@@ -634,12 +452,10 @@ namespace AcesOverTheLines.AI
                 }
             }
 
-            // 3. Energy
             if (_rb != null && _rb.linearVelocity.magnitude < energyLowSpeedMs
                             && _rb.position.y < energyLowAltitudeM)
                 conditions++;
 
-            // 4. Geometry
             if (_noFiringSolutionTime > lostGeometrySeconds)
                 conditions++;
 
@@ -667,12 +483,12 @@ namespace AcesOverTheLines.AI
         }
 
         // ============================================================
-        // Static testable helpers
+        // Static testable helpers — preserved with their tests. The
+        // first three are no longer called from runtime code; the
+        // stabilizer's cos(bank) gate and PID rate limits handle what
+        // they used to handle. ShouldExitClimb is still live.
         // ============================================================
 
-        // Lead-target point: where to aim so a bullet travelling at
-        // muzzleVelocity intersects the target's projected future position.
-        // Iterative first-order: bullet time = current range / muzzleVelocity.
         public static Vector3 ComputeLeadPoint(Vector3 targetPos, Vector3 targetVel, Vector3 firerPos, float muzzleVelocity)
         {
             float range = Vector3.Distance(targetPos, firerPos);
@@ -685,9 +501,10 @@ namespace AcesOverTheLines.AI
             return burstOn && deflectionDeg < maxDeflectionDeg && rangeM < maxRangeM;
         }
 
-        // Climb-entry decision: below the entry altitude (hard trigger) OR
-        // sustained excess descent rate (proactive trigger). Tested in
-        // isolation by the AI tests.
+        // No longer called from runtime — the stabilizer's pitch PID
+        // with cos(bank) gate replaces the per-state hard interrupt
+        // for "below floor" recovery. Kept here because its tests
+        // exercise correct pure-math behaviour.
         public static bool ShouldEnterClimb(
             float altitudeAGL, float verticalVelocityMs, float excessDescentSustainS,
             float entryAltitudeM, float entryDescentRateMs, float entryDescentSustainS)
@@ -697,16 +514,15 @@ namespace AcesOverTheLines.AI
             return false;
         }
 
-        // Climb-exit decision: above the exit altitude AND already climbing.
-        // Both conditions matter — exit only when actually gaining alt.
+        // Live: drives the Climb→Patrol state transition.
         public static bool ShouldExitClimb(float altitudeAGL, float verticalVelocityMs, float exitAltitudeM)
         {
             return altitudeAGL > exitAltitudeM && verticalVelocityMs > 0f;
         }
 
-        // Force minimum elevator (pull-up) when below the hard floor and
-        // zero aileron + full throttle. Wings level for cleanest possible
-        // pull-up; aileron causes energy loss + roll-coupled angle changes.
+        // No longer called from runtime — the stabilizer's PID + rate
+        // limits keep pitch and bank within structural envelope without
+        // a per-tick post-hoc clamp.
         public static ControlInput ApplyAltitudeFloor(
             ControlInput input, float altitudeAGL, float floorAGL, float forcedElevatorMin)
         {
@@ -718,9 +534,7 @@ namespace AcesOverTheLines.AI
             return output;
         }
 
-        // Clamp commanded inputs in the "careful" altitude band (between the
-        // hard floor and a soft threshold above it). Prevents commanded
-        // dives and hard banks that bleed altitude.
+        // No longer called from runtime — see ApplyAltitudeFloor.
         public static ControlInput ClampForLowAltitude(
             ControlInput input, float altitudeAGL, float threshold,
             float elevatorMin, float elevatorMax, float aileronCap)
@@ -734,10 +548,6 @@ namespace AcesOverTheLines.AI
             return output;
         }
 
-        // Three-window firing decision: fire if the (range, deflection)
-        // pair satisfies ANY of the configured windows (snap, close, far).
-        // Snap fires at very-close pass-by ranges even with wide deflection;
-        // close requires tight aim; far is the general medium-range window.
         public static bool ShouldFireMultiWindow(
             float deflectionDeg, float rangeM, bool burstOn,
             float farRangeM, float farDeflectionDeg,
@@ -768,14 +578,6 @@ namespace AcesOverTheLines.AI
             if (speedMs < energyLowSpeedMs && altitudeM < energyLowAltitudeM) conditions++;
             if (noSolutionTimeS > lostGeometrySeconds) conditions++;
             return conditions;
-        }
-
-        static double RampTo(double curr, double target, double dt)
-        {
-            double maxStep = RAMP_RATE * dt;
-            double delta = target - curr;
-            if (Math.Abs(delta) <= maxStep) return target;
-            return curr + Math.Sign(delta) * maxStep;
         }
     }
 }

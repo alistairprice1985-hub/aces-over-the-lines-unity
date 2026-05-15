@@ -771,12 +771,14 @@ MonoBehaviour:
   showAIDebug: 1
   logStateTransitions: 1
   visualRangeM: 1000
-  closeRangeM: 300
   frontHemisphereDeg: 60
-  engageRollCap: 1
-  engageCoordTurnAileronThreshold: 0.5
-  engageCoordTurnBankScale: 1
-  engageCoordTurnElevatorScale: 0.5
+  engageBankClampRad: 0.7
+  engagePitchClampRad: 0.5
+  engageAirspeedMs: 60
+  patrolBankClampRad: 0.3
+  patrolAirspeedMs: 40
+  climbPitchRad: 0.3
+  climbAirspeedMs: 35
   farFireRangeM: 300
   farFireDeflectionDeg: 10
   closeFireRangeM: 100
@@ -790,31 +792,12 @@ MonoBehaviour:
   energyLowSpeedMs: 25
   energyLowAltitudeM: 200
   lostGeometrySeconds: 4
-  disengageNoseDownNormalised: 0.7
   disengageDurationS: 5
   disengageAltitudeFloorM: 300
   evadeDurationS: 3
-  stallSpeedV0Ms: 11.1
-  stallMarginX: 2
-  stallRecoveryDurationS: 2
-  patrolThrottle: 0.7
-  patrolTargetAltitudeM: 1000
-  patrolAltitudeGain: 0.001
-  patrolAltitudeDampingGain: 0.005
-  patrolElevatorClamp: 0.15
-  climbEntryAltitudeM: 600
   climbExitAltitudeM: 1000
-  climbEntryDescentRateMs: 30
-  climbEntryDescentSustainS: 2
-  climbElevator: 0.6
   engageAbandonAltitudeDropM: 500
   engageAbandonDescentRateMs: 45
-  altitudeFloorAGL: 250
-  altitudeFloorElevatorMin: 0.8
-  lowAltitudeThresholdM: 500
-  lowAltElevatorMin: 0
-  lowAltElevatorMax: 0.5
-  lowAltAileronCap: 0.7
 --- !u!114 &567308686
 MonoBehaviour:
   m_ObjectHideFlags: 0
