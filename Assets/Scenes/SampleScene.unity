@@ -798,6 +798,15 @@ MonoBehaviour:
   climbExitAltitudeM: 1000
   engageAbandonAltitudeDropM: 500
   engageAbandonDescentRateMs: 45
+  recoverBankTriggerRad: 1.05
+  recoverPitchTriggerRad: -0.785
+  recoverDescentTriggerMs: 30
+  recoverDescentTriggerAltM: 500
+  recoverBankExitRad: 0.26
+  recoverVyExitMs: -5
+  recoverExitAltitudeM: 300
+  recoverAirspeedMs: 70
+  recoverPitchRad: 0.3
 --- !u!114 &567308686
 MonoBehaviour:
   m_ObjectHideFlags: 0

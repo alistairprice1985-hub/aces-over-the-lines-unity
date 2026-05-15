@@ -26,7 +26,7 @@ namespace AcesOverTheLines.AI
     // is the only one still called from the live code.
     public class AIController : MonoBehaviour, IFlightControlSource
     {
-        public enum State { Patrol, Search, Engage, Evade, Disengage, RTB, Climb }
+        public enum State { Patrol, Search, Engage, Evade, Disengage, RTB, Climb, Recover }
 
         [SerializeField] Transform target;
         [SerializeField] float decisionRateHz = 5f;
@@ -80,6 +80,21 @@ namespace AcesOverTheLines.AI
         // per-tick safety override — it stays.
         [SerializeField] float engageAbandonAltitudeDropM = 500f;
         [SerializeField] float engageAbandonDescentRateMs = 45f;
+
+        // Recover state: attitude-based hard interrupt that replaces the
+        // altitude-floor and stall-recovery overrides deleted in Commit 2.
+        // Triggers on dangerous attitude regardless of current state;
+        // exits when wings near level, not descending hard, above the
+        // hard-floor altitude.
+        [SerializeField] float recoverBankTriggerRad     = 1.05f;   // ≈ 60°
+        [SerializeField] float recoverPitchTriggerRad    = -0.785f; // ≈ -45°
+        [SerializeField] float recoverDescentTriggerMs   = 30f;
+        [SerializeField] float recoverDescentTriggerAltM = 500f;
+        [SerializeField] float recoverBankExitRad        = 0.26f;   // ≈ 15°
+        [SerializeField] float recoverVyExitMs           = -5f;
+        [SerializeField] float recoverExitAltitudeM      = 300f;
+        [SerializeField] float recoverAirspeedMs         = 70f;
+        [SerializeField] float recoverPitchRad           = 0.3f;    // killer-test setpoint
 
         AircraftController _ctrl;
         Rigidbody _rb;
@@ -175,6 +190,23 @@ namespace AcesOverTheLines.AI
         void UpdateStateTransitions()
         {
             if (_rb == null) return;
+
+            // Recover is the highest-priority state. Attitude-based hard
+            // interrupt that supersedes any tactical decision. Replaces
+            // the climb-from-anywhere and altitude-floor pull-up triggers
+            // that were deleted in Commit 2.
+            if (_state != State.Recover
+                && ShouldEnterRecover(
+                    ExtractBankAndPitch(_rb.rotation),
+                    _rb.linearVelocity.y,
+                    _rb.position.y,
+                    recoverBankTriggerRad, recoverPitchTriggerRad,
+                    recoverDescentTriggerMs, recoverDescentTriggerAltM))
+            {
+                TransitionIfChanged(State.Recover);
+                return;
+            }
+
             if (target == null) { TransitionIfChanged(State.Patrol); return; }
 
             float range = Vector3.Distance(target.position, _rb.position);
@@ -182,6 +214,16 @@ namespace AcesOverTheLines.AI
 
             switch (_state)
             {
+                case State.Recover:
+                    if (ShouldExitRecover(
+                            ExtractBankAndPitch(_rb.rotation).bank,
+                            _rb.linearVelocity.y, _rb.position.y,
+                            recoverBankExitRad, recoverVyExitMs, recoverExitAltitudeM))
+                    {
+                        TransitionIfChanged(State.Patrol);
+                    }
+                    break;
+
                 case State.Climb:
                     if (ShouldExitClimb(_rb.position.y, _rb.linearVelocity.y, climbExitAltitudeM))
                         TransitionIfChanged(State.Patrol);
@@ -259,6 +301,7 @@ namespace AcesOverTheLines.AI
         {
             switch (_state)
             {
+                case State.Recover:   return DoRecover();
                 case State.Engage:    return DoEngage();
                 case State.Evade:     return DoEvade();
                 case State.Disengage: return DoDisengage();
@@ -267,6 +310,21 @@ namespace AcesOverTheLines.AI
                 case State.Search:
                 default:              return DoPatrol();
             }
+        }
+
+        // Maximum-aggression recovery: wings level, hard pitch up, full
+        // airspeed. Same setpoint shape that the Commit 1 killer test
+        // verified can recover a 170° inverted descent at 30 m/s in
+        // 6 seconds with the chosen PID gains.
+        FlightSetpoint DoRecover()
+        {
+            return new FlightSetpoint
+            {
+                DesiredBankRad    = 0.0,
+                DesiredPitchRad   = recoverPitchRad,
+                DesiredAirspeedMs = recoverAirspeedMs,
+                Fire = false,
+            };
         }
 
         FlightSetpoint DoClimb()
@@ -518,6 +576,43 @@ namespace AcesOverTheLines.AI
         public static bool ShouldExitClimb(float altitudeAGL, float verticalVelocityMs, float exitAltitudeM)
         {
             return altitudeAGL > exitAltitudeM && verticalVelocityMs > 0f;
+        }
+
+        // Live: Recover state hard interrupt. Fires from any state when
+        // attitude is dangerous (deep bank, deep nose-down) or when the
+        // aircraft is descending fast below a hard altitude threshold.
+        public static bool ShouldEnterRecover(
+            (float bank, float pitch) attitude,
+            float vy, float altitudeAGL,
+            float bankTriggerRad, float pitchTriggerRad,
+            float descentTriggerMs, float descentTriggerAltM)
+        {
+            if (Mathf.Abs(attitude.bank) > bankTriggerRad) return true;
+            if (attitude.pitch < pitchTriggerRad) return true;
+            if (vy < -descentTriggerMs && altitudeAGL < descentTriggerAltM) return true;
+            return false;
+        }
+
+        // Live: Recover→Patrol state transition once the aircraft is
+        // safely recovered (wings near level, no longer descending hard,
+        // safely above the hard-floor altitude).
+        public static bool ShouldExitRecover(
+            float bank, float vy, float altitudeAGL,
+            float bankExitRad, float vyExitMs, float exitAltitudeM)
+        {
+            return Mathf.Abs(bank) < bankExitRad
+                && vy > vyExitMs
+                && altitudeAGL > exitAltitudeM;
+        }
+
+        // Convenience wrapper: cast the stabilizer's double tuple to
+        // floats so the public static triggers don't need to take
+        // doubles. The conversion only ever loses precision beyond the
+        // 0.001 rad / 0.06° threshold, well below the triggers' bands.
+        static (float bank, float pitch) ExtractBankAndPitch(Quaternion bodyToWorld)
+        {
+            var (bank, pitch) = FlightStabilizer.ExtractAttitude(bodyToWorld);
+            return ((float)bank, (float)pitch);
         }
 
         // No longer called from runtime — the stabilizer's PID + rate
