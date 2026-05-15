@@ -774,11 +774,11 @@ MonoBehaviour:
   frontHemisphereDeg: 60
   engageBankClampRad: 0.7
   engagePitchClampRad: 0.5
-  engageAirspeedMs: 60
+  engageAirspeedMs: 55
   patrolBankClampRad: 0.3
   patrolAirspeedMs: 40
   climbPitchRad: 0.3
-  climbAirspeedMs: 35
+  climbAirspeedMs: 45
   farFireRangeM: 300
   farFireDeflectionDeg: 10
   closeFireRangeM: 100

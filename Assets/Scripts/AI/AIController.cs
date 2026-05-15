@@ -43,11 +43,11 @@ namespace AcesOverTheLines.AI
         // Setpoint clamps (per state).
         [SerializeField] float engageBankClampRad  = 0.7f;  // ±40°
         [SerializeField] float engagePitchClampRad = 0.5f;  // ±28.6°
-        [SerializeField] float engageAirspeedMs    = 60f;
+        [SerializeField] float engageAirspeedMs    = 55f;
         [SerializeField] float patrolBankClampRad  = 0.3f;  // ±17.2°
         [SerializeField] float patrolAirspeedMs    = 40f;
         [SerializeField] float climbPitchRad       = 0.3f;
-        [SerializeField] float climbAirspeedMs     = 35f;
+        [SerializeField] float climbAirspeedMs     = 45f;
 
         // Three firing windows (any matching window fires when burst is on).
         [SerializeField] float farFireRangeM = 300f;

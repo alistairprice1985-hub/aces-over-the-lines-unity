@@ -45,7 +45,7 @@ namespace AcesOverTheLines.AI
         // slowest because engine response is the slow physical variable.
         public double MaxAileronRate  = 3.0;
         public double MaxElevatorRate = 2.0;
-        public double MaxThrottleRate = 1.0;
+        public double MaxThrottleRate = 3.0;
 
         double _lastAileron, _lastElevator, _lastThrottle;
 
