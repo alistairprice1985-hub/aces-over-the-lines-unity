@@ -773,7 +773,7 @@ MonoBehaviour:
   visualRangeM: 1000
   frontHemisphereDeg: 60
   engageBankClampRad: 0.7
-  engagePitchClampRad: 0.5
+  engagePitchClampRad: 0.35
   engageAirspeedMs: 55
   patrolBankClampRad: 0.3
   patrolAirspeedMs: 40
@@ -795,9 +795,9 @@ MonoBehaviour:
   disengageDurationS: 5
   disengageAltitudeFloorM: 300
   evadeDurationS: 3
-  climbExitAltitudeM: 1000
+  climbExitAltitudeM: 700
   engageAbandonAltitudeDropM: 500
-  engageAbandonDescentRateMs: 45
+  engageAbandonDescentRateMs: 25
   recoverBankTriggerRad: 1.05
   recoverPitchTriggerRad: -0.785
   recoverDescentTriggerMs: 30

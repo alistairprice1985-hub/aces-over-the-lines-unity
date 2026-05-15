@@ -42,7 +42,7 @@ namespace AcesOverTheLines.AI
 
         // Setpoint clamps (per state).
         [SerializeField] float engageBankClampRad  = 0.7f;  // ±40°
-        [SerializeField] float engagePitchClampRad = 0.5f;  // ±28.6°
+        [SerializeField] float engagePitchClampRad = 0.35f; // ±20°
         [SerializeField] float engageAirspeedMs    = 55f;
         [SerializeField] float patrolBankClampRad  = 0.3f;  // ±17.2°
         [SerializeField] float patrolAirspeedMs    = 40f;
@@ -72,14 +72,17 @@ namespace AcesOverTheLines.AI
         [SerializeField] float evadeDurationS = 3f;
 
         // Climb→Patrol exit threshold (state-machine transition, not a
-        // runtime control override).
-        [SerializeField] float climbExitAltitudeM = 1000f;
+        // runtime control override). 700m chosen so Climb exits when
+        // re-engagement is viable, not when full patrol altitude is
+        // recovered — the difference between a 20-second pass cycle and
+        // a 60-second one.
+        [SerializeField] float climbExitAltitudeM = 700f;
 
         // Engage tactical abandon: transitions Engage→Climb when pursuit
         // costs too much altitude. This is a state-machine decision, not a
         // per-tick safety override — it stays.
         [SerializeField] float engageAbandonAltitudeDropM = 500f;
-        [SerializeField] float engageAbandonDescentRateMs = 45f;
+        [SerializeField] float engageAbandonDescentRateMs = 25f;
 
         // Recover state: attitude-based hard interrupt that replaces the
         // altitude-floor and stall-recovery overrides deleted in Commit 2.
