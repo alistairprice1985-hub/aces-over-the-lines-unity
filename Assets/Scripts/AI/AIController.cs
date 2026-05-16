@@ -38,24 +38,26 @@ namespace AcesOverTheLines.AI
 
         // Engagement geometry thresholds.
         [SerializeField] float visualRangeM = 1000f;
-        [SerializeField] float frontHemisphereDeg = 60f;
+        [SerializeField] float frontHemisphereDeg = 180f;  // 360° engagement awareness — engage any target within visual range
 
         // Setpoint clamps (per state).
-        [SerializeField] float engageBankClampRad  = 0.7f;  // ±40°
-        [SerializeField] float engagePitchClampRad = 0.35f; // ±20°
+        [SerializeField] float engageBankClampRad  = 0.7f;  // ±40° — leaves headroom below recoverBankTriggerRad=1.05 to avoid spurious Recover triggers
+        [SerializeField] float engagePitchClampRad = 0.50f; // ±28.6° — leaves headroom below recoverPitchTriggerRad=-0.785 to avoid spurious Recover triggers
         [SerializeField] float engageAirspeedMs    = 55f;
-        [SerializeField] float patrolBankClampRad  = 0.3f;  // ±17.2°
-        [SerializeField] float patrolAirspeedMs    = 40f;
+        [SerializeField] float patrolBankClampRad   = 0.45f;  // ±25.8°
+        [SerializeField] float patrolPitchRad       = 0.15f;  // ≈8.6° — pitch at full bank (target tracking)
+        [SerializeField] float patrolCruisePitchRad = 0.05f;  // ≈2.9° — pitch at wings level (cruise, no bank-coupled lift loss)
+        [SerializeField] float patrolAirspeedMs     = 55f;   // matches engageAirspeedMs — keep throttle PID active
         [SerializeField] float climbPitchRad       = 0.3f;
         [SerializeField] float climbAirspeedMs     = 45f;
 
         // Three firing windows (any matching window fires when burst is on).
         [SerializeField] float farFireRangeM = 300f;
-        [SerializeField] float farFireDeflectionDeg = 10f;
+        [SerializeField] float farFireDeflectionDeg = 25f;   // widened — AI clamp saturation prevents tighter geometry
         [SerializeField] float closeFireRangeM = 100f;
-        [SerializeField] float closeFireDeflectionDeg = 5f;
+        [SerializeField] float closeFireDeflectionDeg = 15f;   // widened — allow close-range bursts during maneuver fights
         [SerializeField] float snapFireRangeM = 50f;
-        [SerializeField] float snapFireDeflectionDeg = 30f;
+        [SerializeField] float snapFireDeflectionDeg = 60f;   // widened — WW1-realistic close-range spray fire
 
         // Burst-fire cadence.
         [SerializeField] float burstOnS = 0.3f;
@@ -68,7 +70,8 @@ namespace AcesOverTheLines.AI
         [SerializeField] float energyLowAltitudeM = 200f;
         [SerializeField] float lostGeometrySeconds = 4f;
         [SerializeField] float disengageDurationS = 5f;
-        [SerializeField] float disengageAltitudeFloorM = 300f;
+        [SerializeField] float disengageAltitudeFloorM = 1000f;   // dive branch only safe above 1000m; 600 caused terminal dive
+        [SerializeField] float engageBreakOffRangeM = 60f;   // force break-off before head-on collision
         [SerializeField] float evadeDurationS = 3f;
 
         // Climb→Patrol exit threshold (state-machine transition, not a
@@ -82,7 +85,7 @@ namespace AcesOverTheLines.AI
         // costs too much altitude. This is a state-machine decision, not a
         // per-tick safety override — it stays.
         [SerializeField] float engageAbandonAltitudeDropM = 500f;
-        [SerializeField] float engageAbandonDescentRateMs = 25f;
+        [SerializeField] float engageAbandonDescentRateMs = 45f;   // allow committed dive into firing range; 25 caused bailout before farFireRangeM
 
         // Recover state: attitude-based hard interrupt that replaces the
         // altitude-floor and stall-recovery overrides deleted in Commit 2.
@@ -180,7 +183,7 @@ namespace AcesOverTheLines.AI
             {
                 _lastCmdLogTime = Time.time;
                 float speed = _rb != null ? _rb.linearVelocity.magnitude : 0f;
-                Debug.Log($"[AI-CMD] state={_state}  set(bnk={setpoint.DesiredBankRad:F2} ptc={setpoint.DesiredPitchRad:F2} spd={setpoint.DesiredAirspeedMs:F0})  out(ail={cmd.Aileron:F2} elv={cmd.Elevator:F2} thr={cmd.Throttle:F2})  alt={_diagAltitude:F0}  vy={_rb?.linearVelocity.y ?? 0f:F1}  v={speed:F1}");
+                Debug.Log($"[AI-CMD] state={_state}  set(bnk={setpoint.DesiredBankRad:F2} ptc={setpoint.DesiredPitchRad:F2} spd={setpoint.DesiredAirspeedMs:F0} fire={(setpoint.Fire ? 1 : 0)})  out(ail={cmd.Aileron:F2} elv={cmd.Elevator:F2} thr={cmd.Throttle:F2})  alt={_diagAltitude:F0}  vy={_rb?.linearVelocity.y ?? 0f:F1}  v={speed:F1}");
             }
 
             return cmd;
@@ -239,11 +242,18 @@ namespace AcesOverTheLines.AI
                     break;
 
                 case State.Engage:
+                    // Collision avoidance: if we've closed inside the break-off
+                    // range, force Disengage immediately. Prevents the AI from
+                    // flying head-on into the target on overshoot.
+                    if (range < engageBreakOffRangeM)
+                    {
+                        TransitionIfChanged(State.Disengage);
+                    }
                     // Tactical altitude-bleed abandon: if pursuit costs too
                     // much altitude or vy is too negative, transition to
                     // Climb instead of pressing further. This is FSM-level
                     // energy management, not a per-tick control override.
-                    if (_engageEntryAltitude - _rb.position.y > engageAbandonAltitudeDropM
+                    else if (_engageEntryAltitude - _rb.position.y > engageAbandonAltitudeDropM
                         || _rb.linearVelocity.y < -engageAbandonDescentRateMs)
                     {
                         TransitionIfChanged(State.Climb);
@@ -358,10 +368,19 @@ namespace AcesOverTheLines.AI
                     bank = Mathf.Clamp((float)bank, -patrolBankClampRad, patrolBankClampRad);
                 }
             }
+            // Bank-dependent pitch: a banked turn loses vertical lift in
+            // proportion to (1 - cos(bank)). To hold altitude across bank
+            // states, raise pitch as bank magnitude grows. At wings level
+            // use cruise pitch (near-level flight). At full bank use the
+            // higher tracking pitch. Linear interpolation is an empirical
+            // approximation to the cos(bank)-driven relationship that fits
+            // the observed playtest data well enough for tactical purposes.
+            double bankFraction = Mathf.Abs((float)bank) / patrolBankClampRad;
+            double pitch = Mathf.Lerp(patrolCruisePitchRad, patrolPitchRad, (float)bankFraction);
             return new FlightSetpoint
             {
                 DesiredBankRad    = bank,
-                DesiredPitchRad   = 0.0,
+                DesiredPitchRad   = pitch,
                 DesiredAirspeedMs = patrolAirspeedMs,
                 Fire = false,
             };
@@ -429,13 +448,13 @@ namespace AcesOverTheLines.AI
 
         FlightSetpoint DoDisengage()
         {
-            // Low altitude: lateral escape (no diving).
+            // Low altitude: lateral escape with gentle climb (no diving).
             if (_rb != null && _rb.position.y < disengageAltitudeFloorM)
             {
                 return new FlightSetpoint
                 {
                     DesiredBankRad    = 0.5,
-                    DesiredPitchRad   = 0.0,
+                    DesiredPitchRad   = 0.10,
                     DesiredAirspeedMs = 55.0,
                 };
             }

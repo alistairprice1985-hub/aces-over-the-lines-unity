@@ -771,20 +771,22 @@ MonoBehaviour:
   showAIDebug: 1
   logStateTransitions: 1
   visualRangeM: 1000
-  frontHemisphereDeg: 60
+  frontHemisphereDeg: 180
   engageBankClampRad: 0.7
-  engagePitchClampRad: 0.35
+  engagePitchClampRad: 0.5
   engageAirspeedMs: 55
-  patrolBankClampRad: 0.3
-  patrolAirspeedMs: 40
+  patrolBankClampRad: 0.45
+  patrolPitchRad: 0.15
+  patrolCruisePitchRad: 0.05
+  patrolAirspeedMs: 55
   climbPitchRad: 0.3
   climbAirspeedMs: 45
   farFireRangeM: 300
-  farFireDeflectionDeg: 10
+  farFireDeflectionDeg: 25
   closeFireRangeM: 100
-  closeFireDeflectionDeg: 5
+  closeFireDeflectionDeg: 15
   snapFireRangeM: 50
-  snapFireDeflectionDeg: 30
+  snapFireDeflectionDeg: 60
   burstOnS: 0.3
   burstOffS: 0.5
   ammoLowFraction: 0.3
@@ -793,11 +795,12 @@ MonoBehaviour:
   energyLowAltitudeM: 200
   lostGeometrySeconds: 4
   disengageDurationS: 5
-  disengageAltitudeFloorM: 300
+  disengageAltitudeFloorM: 1000
+  engageBreakOffRangeM: 60
   evadeDurationS: 3
   climbExitAltitudeM: 700
   engageAbandonAltitudeDropM: 500
-  engageAbandonDescentRateMs: 25
+  engageAbandonDescentRateMs: 45
   recoverBankTriggerRad: 1.05
   recoverPitchTriggerRad: -0.785
   recoverDescentTriggerMs: 30
@@ -836,7 +839,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: AcesOverTheLines.Flight::AcesOverTheLines.Flight.AircraftController
   aircraftId: fokker_d7
-  initialAltitudeM: 1200
+  initialAltitudeM: 1000
   initialHeadingDeg: 0
   initialSpeedMs: 50
   useStubControls: 0
@@ -1151,7 +1154,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: AcesOverTheLines.Flight::AcesOverTheLines.Flight.AircraftController
   aircraftId: sopwith_camel
-  initialAltitudeM: 500
+  initialAltitudeM: 1000
   initialHeadingDeg: 0
   initialSpeedMs: 50
   useStubControls: 0
