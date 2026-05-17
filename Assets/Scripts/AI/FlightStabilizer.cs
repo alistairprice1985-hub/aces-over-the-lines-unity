@@ -6,12 +6,23 @@ namespace AcesOverTheLines.AI
     // Inner-loop attitude/speed stabilizer. Three PIDs (roll, pitch,
     // throttle) drive the aircraft toward a FlightSetpoint.
     //
-    // The single load-bearing design choice: the pitch PID output is
-    // multiplied by cos(bank). When banked 90° pitch authority is zero,
-    // so the only way to gain altitude is for the roll PID to bring the
-    // wings level first. This is the mathematical fix that makes
+    // Two load-bearing design choices, both universal aerodynamic
+    // constraints that no setpoint can override:
+    //
+    // (1) The pitch PID output is multiplied by cos(bank). When banked
+    // 90° pitch authority is zero, so the only way to gain altitude is
+    // for the roll PID to bring the wings level first. This makes
     // graveyard spirals impossible — the architecture cannot command
     // "pull elevator while inverted" and dig itself deeper.
+    //
+    // (2) The commanded pitch setpoint is scaled by airspeed/desired
+    // airspeed (floored at 0.3). When the aircraft is below its target
+    // airspeed, the PID is told a softer pitch target rather than asked
+    // to reach the full setpoint it cannot achieve. This prevents the
+    // low-speed stall-during-recovery failure mode (Commit 7) where
+    // the elevator saturates, induced drag bleeds remaining airspeed,
+    // the wings stall, and the aircraft falls out of the sky with both
+    // controls pegged.
     //
     // Rate limits on each output channel prevent the "slam to the stops"
     // pathology that destabilised the FSM in rounds 4a–4h.
@@ -91,8 +102,25 @@ namespace AcesOverTheLines.AI
         // EditMode test harness with a kinematic flight model.
         public ControlInput Stabilize(FlightSetpoint sp, double bank, double pitch, double speed, double dt)
         {
+            // Airspeed-aware pitch setpoint attenuation (Round 5 Commit 7).
+            // Scale the commanded pitch by available airspeed: at or above the
+            // setpoint's target speed, full pitch authority is used; below, scale
+            // down proportionally so the PID does not demand more lift than the
+            // wings can produce. Floor at 0.3 retains minimum recovery authority,
+            // analogous to the floor that the cos(bank) gate effectively provides.
+            //
+            // Without this, the pitch PID saturates trying to reach an unachievable
+            // setpoint at low speed; induced drag bleeds remaining airspeed; the
+            // wings stall; the aircraft enters an unrecoverable dive with both
+            // elevator and aileron saturated. Documented failure pattern in
+            // docs/playtests/2026-05-16-baseline-pre-doengage-rewrite.md.
+            double airspeedRatio = sp.DesiredAirspeedMs > 0.0
+                ? Mathf.Clamp((float)(speed / sp.DesiredAirspeedMs), 0.3f, 1.0f)
+                : 1.0f;
+            double effectivePitchSetpoint = sp.DesiredPitchRad * airspeedRatio;
+
             double rollError = WrapToPi(sp.DesiredBankRad - bank);
-            double pitchError = sp.DesiredPitchRad - pitch;
+            double pitchError = effectivePitchSetpoint - pitch;
             double speedError = sp.DesiredAirspeedMs - speed;
 
             double rollCmd  = RollPid.Update(rollError, dt);

@@ -48,6 +48,84 @@ namespace AcesOverTheLines.AI.Tests
             Assert.AreEqual(Mathf.PI, Mathf.Abs((float)bank), 1e-3);
         }
 
+        // ---- Airspeed-aware pitch attenuation (Commit 7 stall guard) ----
+
+        [Test]
+        public void PitchCommandScalesWithAirspeedRatio()
+        {
+            // Use a small DesiredPitchRad so the steady-state PID output stays
+            // below the ±1 clamp (Kp=1.5 means error < ~0.66 stays unsaturated).
+            // Run many ticks so the PID's first-call derivative kick decays and
+            // the rate limiter catches up — only then does the elevator command
+            // directly reflect the scaled setpoint.
+            var setpoint = new FlightSetpoint
+            {
+                DesiredBankRad = 0.0,
+                DesiredPitchRad = 0.05,
+                DesiredAirspeedMs = 70.0,
+            };
+
+            double SettleElevator(double speed)
+            {
+                var s = new FlightStabilizer();
+                double last = 0;
+                // 200 ticks at dt=0.02 = 4 seconds — well past PID transient
+                // (with Kp=1.5, Ki=0, Kd=0.3, system settles in <0.5s).
+                for (int i = 0; i < 200; i++)
+                {
+                    last = s.Stabilize(setpoint, bank: 0.0, pitch: 0.0,
+                                       speed: speed, dt: 0.02).Elevator;
+                }
+                return last;
+            }
+
+            // ratio = 1.0 (at setpoint speed): full pitch authority, command = Kp * 0.05 = 0.075
+            double full = SettleElevator(70.0);
+            // ratio = 0.5 (half setpoint speed): pitch attenuated to 0.025, command = Kp * 0.025 = 0.0375
+            double half = SettleElevator(35.0);
+            // ratio = 0.3 (floor, speed=5 would give 0.071 unclamped): pitch attenuated to 0.015, command = Kp * 0.015 = 0.0225
+            double veryLow = SettleElevator(5.0);
+            // ratio = 1.0 (ceiling, over-speed does NOT increase pitch): command = 0.075
+            double over = SettleElevator(140.0);
+
+            Assert.Less(half, full,
+                $"Half-airspeed elevator should be less than full-airspeed elevator. " +
+                $"full={full:F4}, half={half:F4}");
+
+            Assert.Greater(veryLow, 0.0,
+                $"Very-low-airspeed elevator should retain minimum authority via 0.3 floor. " +
+                $"veryLow={veryLow:F4}");
+
+            Assert.Less(veryLow, half,
+                $"Very-low-airspeed (floor at 0.3 ratio) should give less elevator than " +
+                $"half-airspeed (ratio 0.5). veryLow={veryLow:F4}, half={half:F4}");
+
+            // Above-setpoint airspeed must NOT increase pitch beyond the full
+            // setpoint (1.0 ceiling on the ratio).
+            Assert.AreEqual(full, over, 1e-4,
+                $"Over-airspeed elevator must equal full-airspeed elevator (ratio capped at 1.0). " +
+                $"full={full:F4}, over={over:F4}");
+        }
+
+        [Test]
+        public void ZeroDesiredAirspeedDoesNotDivideByZero()
+        {
+            // Defensive: a setpoint with DesiredAirspeedMs = 0 (e.g. a state
+            // that doesn't care about throttle) should not crash the
+            // attenuation logic. The ratio should default to 1.0 (no
+            // attenuation) when DesiredAirspeedMs is non-positive.
+            var setpoint = new FlightSetpoint
+            {
+                DesiredBankRad = 0.0,
+                DesiredPitchRad = 0.3,
+                DesiredAirspeedMs = 0.0,
+            };
+            var s = new FlightStabilizer();
+            var cmd = s.Stabilize(setpoint, bank: 0.0, pitch: 0.0, speed: 30.0, dt: 0.02);
+            Assert.Greater(cmd.Elevator, 0.0,
+                $"With DesiredAirspeedMs=0, full pitch authority should apply. Got {cmd.Elevator:F3}");
+        }
+
         // ---- Killer test: inverted descent recovers in three seconds ----
         //
         // Kinematic flight model driven by the stabilizer's output. The
