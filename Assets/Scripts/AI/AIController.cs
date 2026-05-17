@@ -115,6 +115,7 @@ namespace AcesOverTheLines.AI
         bool _burstOn;
         float _engageEntryAltitude;
         float _lastCmdLogTime = -10f;
+        float _lastPatrolGateLogTime;
 
         // Diagnostic state cached per-tick for the OnGUI overlay.
         float _diagRange;
@@ -237,9 +238,28 @@ namespace AcesOverTheLines.AI
 
                 case State.Patrol:
                 case State.Search:
-                    if (range < visualRangeM && bearing < frontHemisphereDeg)
+                {
+                    bool gateFires = range < visualRangeM && bearing < frontHemisphereDeg;
+                    if (gateFires)
+                    {
                         TransitionIfChanged(State.Engage);
+                    }
+                    else if (logStateTransitions
+                             && Time.time - _lastPatrolGateLogTime >= 1.0f)
+                    {
+                        // 1 Hz gated log: capture exactly which condition failed so
+                        // a tail of identical Patrol [AI-CMD] entries is no longer
+                        // diagnostically opaque. Round 5 Commit 8.
+                        _lastPatrolGateLogTime = Time.time;
+                        string failReason =
+                            target == null ? "target=null"
+                            : !(range < visualRangeM) ? $"range={range:F0}m >= visualRangeM={visualRangeM:F0}"
+                            : !(bearing < frontHemisphereDeg) ? $"bearing={bearing:F1}° >= frontHemisphereDeg={frontHemisphereDeg:F1}°"
+                            : "unknown";
+                        Debug.Log($"[AI-GATE] {_state} → Engage gate FAIL: {failReason}  (range={range:F0}m  bearing={bearing:F1}°  target={(target == null ? "null" : target.name)})");
+                    }
                     break;
+                }
 
                 case State.Engage:
                     // Collision avoidance: if we've closed inside the break-off
