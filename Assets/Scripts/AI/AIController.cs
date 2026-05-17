@@ -117,8 +117,22 @@ namespace AcesOverTheLines.AI
         // Round 6 Commit 2 — pathological-behaviour fixes from 2026-05-17 playtest.
 
         [Header("Engage limits")]
-        [SerializeField] float engageStalemateTimeout = 25f;   // seconds — forced reset if Engage dwells without a firing solution
+        // Iteration 3 (Phase 1 B&Z): bumped from 25→60. With a 90° turn-in
+        // taking ~10s plus closing time, 25s was firing before the AI
+        // could complete a pursuit cycle on Scenario 1.
+        [SerializeField] float engageStalemateTimeout = 60f;   // seconds — forced reset if Engage dwells without a firing solution
         [SerializeField] float noFiringSolutionTimeout = 12f;  // seconds — entry-cone gap that counts as "no firing solution"
+
+        [Header("Engage doctrine")]
+        // Altitude the AI aims to hold ABOVE the target before committing
+        // to a firing pass. The "boom" of boom-and-zoom — without it, the
+        // AI commits at parity and loses altitude in the turn-in. Added
+        // for Phase 1 revision (perch-altitude active pursuit).
+        // Iteration rev-#2: 100→60. With 100m perch, AI ended up 10m
+        // ABOVE target at min range — diving 10° down, still outside
+        // 2° entry cone. Lower perch → shallower dive → closer to parity
+        // at firing range.
+        [SerializeField] float perchAdvantageM = 60f;
 
         [Header("Disengage exit gates")]
         [SerializeField] float disengageMinRange = 600f;        // metres
@@ -159,6 +173,18 @@ namespace AcesOverTheLines.AI
         PursuitMode _committedMode = PursuitMode.Lead;
         PursuitMode _modeCandidate = PursuitMode.Lead;
         float _modeCandidateSince;
+
+        // Phase 1 boom-and-zoom doctrine. Tracked across DoEngage calls so
+        // the closing-rate-driven throttle gate can compare frames, and so
+        // UpdateStateTransitions can detect the "ran past target and now
+        // outside fire range" post-pass extension condition.
+        float _engagePrevRange;
+        bool _hasMadeFiringPass;
+        // Revision C: NowSeconds at which range last started opening (or
+        // 0 if range is currently closing). The post-pass extension fires
+        // only after range has been continuously opening for 1.5s, not on
+        // a single-frame jitter.
+        float _rangeOpeningSince;
 
         // Diagnostic state cached per-tick for the OnGUI overlay.
         float _diagRange;
@@ -330,6 +356,39 @@ namespace AcesOverTheLines.AI
                 {
                     float engageDwell = NowSeconds - _stateEnteredTime;
 
+                    // Phase 1 boom-and-zoom: energy discipline.
+                    // If the AI is more than 100m of energy DEFICIT AND
+                    // the target is far enough (range > 800m) to climb-
+                    // out productively, force Climb. Below 800m the AI
+                    // commits despite deficit — extending the merge gives
+                    // back kinetic energy from altitude trade.
+                    // Iteration rev-#8: added `range > 800f` gate. Without
+                    // it, Scenario 4 (target 500m above AI, deltaE=-500
+                    // from t=0) cycled Engage→Climb→Patrol every 0.5s
+                    // and never executed a real pursuit.
+                    double selfEnergyE = ComputeEnergyState(_rb.position.y, _rb.linearVelocity.magnitude);
+                    double targetEnergyE = ComputeEnergyState(
+                        target.position.y,
+                        _targetRb != null ? _targetRb.linearVelocity.magnitude : 0.0);
+                    double deltaE = selfEnergyE - targetEnergyE;
+                    if (deltaE < -100.0 && range > 800f)
+                    {
+                        TransitionIfChanged(State.Climb);
+                        return;
+                    }
+
+                    // Phase 1 boom-and-zoom: post-pass extension (Revision C).
+                    // Once the AI has been inside the firing-range envelope
+                    // (250m) AND range has been continuously opening for
+                    // 1.5s afterwards, the pass is over — climb out.
+                    if (_hasMadeFiringPass && range > 250f
+                        && _rangeOpeningSince > 0f
+                        && (float)NowSeconds - _rangeOpeningSince >= 1.5f)
+                    {
+                        TransitionIfChanged(State.Climb);
+                        return;
+                    }
+
                     // Fix 1: forced reset if Engage has dwelled past the
                     // stalemate timeout AND no firing solution has been
                     // produced for too long. Without this, Engage has no
@@ -406,7 +465,14 @@ namespace AcesOverTheLines.AI
             _noFiringSolutionTime = 0f;
             _timeSinceFiringSolution = 0f;
             if (newState == State.Engage && _rb != null)
+            {
                 _engageEntryAltitude = _rb.position.y;
+                _engagePrevRange = (target != null)
+                    ? Vector3.Distance(target.position, _rb.position)
+                    : 0f;
+                _hasMadeFiringPass = false;
+                _rangeOpeningSince = 0f;
+            }
 
             // Reset stabilizer history on state change. Setpoint
             // discontinuities (e.g., Patrol→Engage jumps bank from
@@ -504,105 +570,111 @@ namespace AcesOverTheLines.AI
             };
         }
 
-        // Round 6 Commit 1 — §6 DoEngage rewrite.
-        // Computes energy state, selects pursuit mode (Lead/Lag/Pure), and emits
-        // a setpoint computed from the chosen pursuit point. Multi-window firing
-        // decision is unchanged from the previous implementation — fire-window
-        // deflection caps naturally filter shots that lag-mode produces, so no
-        // explicit mode-based fire gate is needed. See docs/AI-STATE-OF-PLAY.md
-        // §6.3.
+        // Phase 1 Engage rewrite (2026-05-17). Boom-and-zoom doctrine: maintain
+        // energy state ≥ target's, approach from altitude advantage, commit to
+        // a single pure-pursuit attack pass, climb out after. Angles-fighting
+        // (Lag/Lead/Pure mode selection, pursuit-point geometry) is reserved
+        // for Phase 2. Energy-management transitions (deltaE < -100m → Climb,
+        // post-pass extension → Climb) live in UpdateStateTransitions; this
+        // method is pure setpoint emission.
         //
-        // Airspeed multipliers per §6.3:
-        //   Lead = 1.00 × engageAirspeedMs
-        //   Lag  = 0.85 × engageAirspeedMs (bleed off speed to tighten lag turn)
-        //   Pure = 1.10 × engageAirspeedMs (close fast, capped at sustainable
-        //          airframe limit — §6.3 specified 1.15 but Fokker D.VII level-
-        //          flight top speed ≈ 1.1 × cruise; the 1.15 setpoint cannot be
-        //          achieved in straight-and-level so we cap at the achievable
-        //          1.10 to avoid PID throttle wind-up).
+        // Setpoint rules:
+        //   pitch  — altitude-driven. Above target → dive (gentler when close).
+        //            Below target → climb. Within ±30m → level.
+        //   bank   — signed-angle-off-nose to target, linear ramp from 0° → 30°
+        //            angle-off → 0 → 0.7 rad bank.
+        //   speed  — closing-rate driven. Opening → max pursuit. Closing far →
+        //            cruise. Closing close & on-axis → 47 m/s to extend tracking.
+        //   fire   — unchanged: existing burst-fire cone latch.
         FlightSetpoint DoEngage()
         {
             if (target == null || _rb == null)
                 return new FlightSetpoint { DesiredAirspeedMs = patrolAirspeedMs };
 
-            // --- Energy state ---
+            // --- Energy state (telemetry only — gating lives in the FSM) ---
             double selfAlt = _rb.position.y;
             double selfSpd = _rb.linearVelocity.magnitude;
-            double selfEnergy = ComputeEnergyState(selfAlt, selfSpd);
-
             double targetAlt = target.position.y;
-            double targetSpd = _targetRb != null ? _targetRb.linearVelocity.magnitude : 0.0;
-            double targetEnergy = ComputeEnergyState(targetAlt, targetSpd);
-
-            double deltaE = selfEnergy - targetEnergy;
+            double targetSpdMs = _targetRb != null ? _targetRb.linearVelocity.magnitude : 0.0;
+            double deltaE = ComputeEnergyState(selfAlt, selfSpd) - ComputeEnergyState(targetAlt, targetSpdMs);
 
             // --- Geometry ---
             float range = Vector3.Distance(target.position, _rb.position);
-            Vector3 targetForward = target.forward;
-            Vector3 targetToSelf  = _rb.position - target.position;
-            float aspectDeg = ComputeAspectAngleDeg(targetForward, targetToSelf);
-
-            // --- Pursuit mode (with hysteresis, Fix 3a) ---
-            // SelectPursuitMode is pure-math; the hysteresis lives here so
-            // the static helper stays trivially testable. The raw decision
-            // must persist continuously for modeSwitchHoldTime before it
-            // overrides the committed mode — stops the per-tick Pure↔Lag
-            // flapping that drove throttle 1.00↔0.00 in playtest.
-            PursuitMode rawMode = SelectPursuitMode(
-                deltaE, aspectDeg, range, closeFireRangeM, visualRangeM);
-            if (rawMode != _committedMode)
-            {
-                if (rawMode != _modeCandidate)
-                {
-                    _modeCandidate = rawMode;
-                    _modeCandidateSince = NowSeconds;
-                }
-                else if (NowSeconds - _modeCandidateSince >= modeSwitchHoldTime)
-                {
-                    _committedMode = rawMode;
-                }
-            }
-            else
-            {
-                _modeCandidate = rawMode;
-            }
-            PursuitMode mode = _committedMode;
-
-            // --- Pursuit point and setpoint ---
-            Vector3 targetVel = _targetRb != null ? _targetRb.linearVelocity : Vector3.zero;
-            Vector3 pursuitPoint = ComputePursuitPoint(
-                mode, target.position, targetVel, _rb.position, MuzzleVelocity());
-
-            Vector3 toPursuitWorld = (pursuitPoint - _rb.position).normalized;
-            Vector3 toPursuitBody  = Quaternion.Inverse(_rb.rotation) * toPursuitWorld;
+            Vector3 toTargetWorld = (target.position - _rb.position).normalized;
+            Vector3 toTargetBody  = Quaternion.Inverse(_rb.rotation) * toTargetWorld;
 
             // Body frame: +x forward, +y up, +z right.
-            // atan2(z, x) is the yaw angle to pursuit point: positive when point
-            // is to the right → bank right (positive setpoint). atan2(y, x) is
-            // the pitch angle to pursuit point: positive when above the body
-            // x-axis → pitch up.
-            double bank  = Mathf.Atan2(toPursuitBody.z, toPursuitBody.x);
-            double pitch = Mathf.Atan2(toPursuitBody.y, toPursuitBody.x);
-            bank  = Mathf.Clamp((float)bank,  -engageBankClampRad,  engageBankClampRad);
-            pitch = Mathf.Clamp((float)pitch, -engagePitchClampRad, engagePitchClampRad);
+            // Signed angle-off-nose around the vertical (yaw) axis.
+            // Positive = target is to the right → bank right.
+            float signedAngleOffDeg = Mathf.Atan2(toTargetBody.z, toTargetBody.x) * Mathf.Rad2Deg;
+            float absAngleOffDeg = Mathf.Abs(signedAngleOffDeg);
 
-            // 2026-05-17 playtest fix (Issue 2): mode-independent
-            // energy-bleed gate. The legacy Lag-only gate left Lead and
-            // Pure free to command ptc=-0.50 spd=47 with +498m of energy
-            // already ahead of the target. The gate now applies to all
-            // three pursuit modes; mode still determines bank (via
-            // pursuit-point geometry), pitch/airspeed are ΔE-driven.
-            var bleed = ApplyEnergyBleedGate(deltaE, lagBleedMaxDeltaE);
-            pitch = bleed.pitch;
-            double airspeed = bleed.airspeed;
+            // --- Closing rate (consumed by pitch's perch lead AND speed setpoint) ---
+            float closingRate = (_engagePrevRange - range) / Time.fixedDeltaTime;
 
-            // --- Firing decision (Fix 4: cone-latch burst) ---
-            // Replaces the per-tick burst-cycle toggle that produced
-            // single-tick fire=1 events in playtest. Trigger latches for
-            // burstMinDuration once the tight entry cone is satisfied;
-            // wider hold cone lets gunsight wobble continue the burst.
+            // --- Pitch setpoint: project target altitude forward, aim for perch ---
+            // Revision B: lead the perch. By the time the AI gets to where
+            // the target currently is, the target has moved — for a climbing
+            // or diving target this matters by hundreds of metres.
+            float targetVy = _targetRb != null ? _targetRb.linearVelocity.y : 0f;
+            float closingForLead = Mathf.Max(closingRate, 5f);  // floor avoids div-by-zero when range is stable or opening
+            float estimatedTimeToCloseS = range / closingForLead;
+            float projectedTargetAlt = (float)targetAlt + targetVy * estimatedTimeToCloseS;
+            float perchAlt = projectedTargetAlt + perchAdvantageM;
+            float relToPerch = perchAlt - (float)selfAlt;
+
+            // Revision A: perch-altitude active pursuit. The "boom" — gain
+            // altitude advantage before committing to the dive, rather
+            // than chasing parity.
+            // Final config (per revision spec + iter rev-#4 tuning):
+            //   - Above-target dive threshold 30→5 (flight model ceiling
+            //     allows ~16m max above target; 30 would never trigger).
+            //   - Dive-aggressiveness range threshold 400→200 (commit
+            //     longer before easing off).
+            // Close-range parity override (iter rev-#5/6) removed — it
+            // induced pitch oscillation that prevented stable firing
+            // geometry.
+            double pitch;
+            if (relToPerch > 20f)
+                pitch = 0.30;                                  // below perch — climb actively
+            else if ((float)selfAlt > (float)targetAlt + 5f)
+                pitch = (range > 200f) ? -0.20 : -0.05;        // above target — committed dive
+            else
+                pitch = 0.0;                                   // merge band — on the firing line
+
+            // --- Bank setpoint (ramped angle-off-nose) ---
+            double bank = Mathf.Clamp(signedAngleOffDeg / 30f, -0.7f, 0.7f);
+
+            // --- Closing-rate-driven speed setpoint ---
+            double airspeed;
+            if (closingRate < 0f)
+                airspeed = Mathf.Max((float)selfSpd + 5f, 60f);  // opening: full pursuit
+            else if (range > 250f)
+                airspeed = 55.0;                                 // closing far: cruise pursuit
+            else if (absAngleOffDeg < 5f)
+                airspeed = 47.0;                                 // close & on-axis: extend tracking time
+            else
+                airspeed = 55.0;                                 // close but off-axis: keep cruising
+
+            // Revision C: track when range last started opening, for the
+            // state-machine's post-pass extension hysteresis.
+            if (closingRate < 0f && _rangeOpeningSince < 0.5f)
+                _rangeOpeningSince = (float)NowSeconds;
+            else if (closingRate >= 0f)
+                _rangeOpeningSince = 0f;
+
+            // Track post-pass for the state-machine extension trigger.
+            if (range < 250f) _hasMadeFiringPass = true;
+
+            // Update prev-range AT THE END so all consumers used previous-frame value.
+            _engagePrevRange = range;
+
+            // --- Firing decision (cone-latch burst — Fix 4, unchanged) ---
+            // Deflection-to-target. Phase 1 forces pure pursuit, so the
+            // deflection is identical to the legacy deflection-to-pursuit-
+            // point computation.
             float deflectionDeg = Vector3.Angle(
-                _rb.rotation * new Vector3(1f, 0f, 0f), toPursuitWorld);
+                _rb.rotation * new Vector3(1f, 0f, 0f), toTargetWorld);
             float dt = Time.fixedDeltaTime;
             if (deflectionDeg > 30f) _noFiringSolutionTime += dt;
             else _noFiringSolutionTime = Mathf.Max(0f, _noFiringSolutionTime - dt);
@@ -613,7 +685,7 @@ namespace AcesOverTheLines.AI
             if (inEntryCone)
             {
                 _burstUntil = Mathf.Max(_burstUntil, NowSeconds + burstMinDuration);
-                _timeSinceFiringSolution = 0f;     // Fix 1 hook
+                _timeSinceFiringSolution = 0f;
                 fire = true;
             }
             else
@@ -625,7 +697,7 @@ namespace AcesOverTheLines.AI
             // --- Diagnostic state cache ---
             _diagRange = range;
             _diagDeflectionDeg = deflectionDeg;
-            _diagPursuitMode = mode;
+            _diagPursuitMode = PursuitMode.Lead;   // Phase 1 forces lead-toward-target
             _diagDeltaE = deltaE;
 
             return new FlightSetpoint
