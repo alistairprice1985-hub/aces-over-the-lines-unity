@@ -265,6 +265,158 @@ namespace AcesOverTheLines.AI.Tests
             Assert.IsFalse(AIController.ShouldExitClimb(
                 altitudeAGL: 900f, verticalVelocityMs: 5f, exitAltitudeM: 1000f));
         }
+
+        // ============================================================
+        // §6 DoEngage rewrite tests (Round 6 Commit 1)
+        // ============================================================
+
+        [Test]
+        public void ComputeEnergyState_StationaryGroundLevel_ReturnsZero()
+        {
+            Assert.AreEqual(0.0, AIController.ComputeEnergyState(0.0, 0.0), 0.001);
+        }
+
+        [Test]
+        public void ComputeEnergyState_AltitudeOnly_ReturnsAltitude()
+        {
+            Assert.AreEqual(1000.0, AIController.ComputeEnergyState(1000.0, 0.0), 0.001);
+        }
+
+        [Test]
+        public void ComputeEnergyState_SpeedOnly_ReturnsKineticAltitudeEquivalent()
+        {
+            // At v = 44.3 m/s, v²/(2g) ≈ 100.04 m
+            Assert.AreEqual(100.04, AIController.ComputeEnergyState(0.0, 44.3), 0.1);
+        }
+
+        [Test]
+        public void ComputeEnergyState_AltitudeAndSpeed_AdditiveCombination()
+        {
+            // Sanity: alt + kinetic equivalent
+            double E = AIController.ComputeEnergyState(500.0, 50.0);
+            double expected = 500.0 + (50.0 * 50.0) / (2.0 * 9.81);
+            Assert.AreEqual(expected, E, 0.001);
+        }
+
+        [Test]
+        public void ComputeAspectAngleDeg_DirectlyAstern_ReturnsZero()
+        {
+            // Self is behind target, target moving forward away from self.
+            // targetForward = +x, targetToSelf = -x (self is behind on target's x axis).
+            // Aspect = angle between +x and -x = 180° — wait, this is the geometric
+            // angle, not the "off-tail" angle as conventionally defined.
+            //
+            // The contract uses: aspectDeg = Vector3.Angle(target.forward, target → self).
+            // When self is directly BEHIND target, the vector from target to self points
+            // OPPOSITE to target's forward, so aspect = 180°.
+            // When self is directly AHEAD of target, the vector from target to self points
+            // ALONG target's forward, so aspect = 0°.
+            //
+            // This is the GEOMETRIC aspect angle, where 0° means head-on and 180° means
+            // tail-chase. NOTE: this is the inverse of the conventional dogfight aspect
+            // angle (where 0° means tail-chase). The §6.2 decision tree uses this
+            // geometric convention consistently: high aspect (> 90°) means target is
+            // FACING the AI (bad — switch to lag); low aspect (< 60°) means AI is
+            // approaching target from behind (good — commit to lead).
+            Vector3 targetForward = new Vector3(1f, 0f, 0f);
+            Vector3 targetToSelf  = new Vector3(-1f, 0f, 0f); // self behind target
+            float aspect = AIController.ComputeAspectAngleDeg(targetForward, targetToSelf);
+            Assert.AreEqual(180f, aspect, 0.1f);
+        }
+
+        [Test]
+        public void ComputeAspectAngleDeg_HeadOn_ReturnsZero()
+        {
+            Vector3 targetForward = new Vector3(1f, 0f, 0f);
+            Vector3 targetToSelf  = new Vector3(1f, 0f, 0f); // self ahead of target
+            float aspect = AIController.ComputeAspectAngleDeg(targetForward, targetToSelf);
+            Assert.AreEqual(0f, aspect, 0.1f);
+        }
+
+        [Test]
+        public void ComputeAspectAngleDeg_BeamOn_Returns90()
+        {
+            Vector3 targetForward = new Vector3(1f, 0f, 0f);
+            Vector3 targetToSelf  = new Vector3(0f, 0f, 1f); // self to target's right
+            float aspect = AIController.ComputeAspectAngleDeg(targetForward, targetToSelf);
+            Assert.AreEqual(90f, aspect, 0.1f);
+        }
+
+        // SelectPursuitMode decision tree — parameterised tests covering each branch.
+        // closeFireRangeM=100, visualRangeM=1000 (matches Inspector defaults).
+        [TestCase(  0f,   0.0, 200f, ExpectedResult = AIController.PursuitMode.Lead, TestName = "default → Lead")]
+        [TestCase(125f, 100.0, 200f, ExpectedResult = AIController.PursuitMode.Lag,  TestName = "aspect>120 → Lag (doctrinal floor)")]
+        [TestCase( 50f, -10.0, 200f, ExpectedResult = AIController.PursuitMode.Lag,  TestName = "ΔE<0 → Lag (energy preservation)")]
+        [TestCase( 95f,  10.0, 200f, ExpectedResult = AIController.PursuitMode.Lag,  TestName = "aspect>90 AND range>close → Lag (re-position)")]
+        [TestCase( 95f,  10.0,  50f, ExpectedResult = AIController.PursuitMode.Lead, TestName = "aspect>90 BUT range<close → Lead (still in gun range)")]
+        [TestCase( 45f, 100.0, 500f, ExpectedResult = AIController.PursuitMode.Pure, TestName = "range>0.4*visual AND ΔE>50 → Pure (close)")]
+        [TestCase( 45f,  30.0, 500f, ExpectedResult = AIController.PursuitMode.Lead, TestName = "range>0.4*visual BUT ΔE<=50 → Lead (insufficient advantage to commit to pure)")]
+        public AIController.PursuitMode SelectPursuitMode_DecisionTree(
+            float aspect, double deltaE, float range)
+        {
+            return AIController.SelectPursuitMode(
+                deltaE, aspect, range,
+                closeFireRangeM: 100f, visualRangeM: 1000f);
+        }
+
+        [Test]
+        public void ComputePursuitPoint_Pure_ReturnsTargetPosition()
+        {
+            Vector3 targetPos = new Vector3(100f, 0f, 0f);
+            Vector3 targetVel = new Vector3(20f, 0f, 0f);
+            Vector3 firerPos = Vector3.zero;
+            Vector3 p = AIController.ComputePursuitPoint(
+                AIController.PursuitMode.Pure, targetPos, targetVel, firerPos, 820f);
+            Assert.AreEqual(targetPos, p);
+        }
+
+        [Test]
+        public void ComputePursuitPoint_Lead_ExtrapolatesTargetForward()
+        {
+            Vector3 targetPos = new Vector3(100f, 0f, 0f);
+            Vector3 targetVel = new Vector3(20f, 0f, 0f);
+            Vector3 firerPos = Vector3.zero;
+            Vector3 p = AIController.ComputePursuitPoint(
+                AIController.PursuitMode.Lead, targetPos, targetVel, firerPos, 820f);
+            // Lead point = targetPos + targetVel * (range / muzzleVelocity)
+            // range = 100, muzzleVelocity = 820, so bulletTime ≈ 0.122s
+            // Expected lead = (100 + 20*0.122, 0, 0) ≈ (102.44, 0, 0)
+            Assert.Greater(p.x, targetPos.x);
+            Assert.AreEqual(targetPos.y, p.y, 0.001f);
+            Assert.AreEqual(targetPos.z, p.z, 0.001f);
+        }
+
+        [Test]
+        public void ComputePursuitPoint_Lag_ExtrapolatesTargetBackward()
+        {
+            Vector3 targetPos = new Vector3(100f, 0f, 0f);
+            Vector3 targetVel = new Vector3(20f, 0f, 0f);
+            Vector3 firerPos = Vector3.zero;
+            Vector3 p = AIController.ComputePursuitPoint(
+                AIController.PursuitMode.Lag, targetPos, targetVel, firerPos, 820f);
+            // Lag = targetPos - targetVel * (range / muzzleVelocity)
+            // Expected lag ≈ (100 - 2.44, 0, 0) = (97.56, 0, 0)
+            Assert.Less(p.x, targetPos.x);
+            Assert.AreEqual(targetPos.y, p.y, 0.001f);
+            Assert.AreEqual(targetPos.z, p.z, 0.001f);
+        }
+
+        [Test]
+        public void ComputePursuitPoint_LeadAndLag_AreSymmetricAroundTarget()
+        {
+            Vector3 targetPos = new Vector3(100f, 50f, 0f);
+            Vector3 targetVel = new Vector3(20f, 0f, 5f);
+            Vector3 firerPos = Vector3.zero;
+            Vector3 lead = AIController.ComputePursuitPoint(
+                AIController.PursuitMode.Lead, targetPos, targetVel, firerPos, 820f);
+            Vector3 lag  = AIController.ComputePursuitPoint(
+                AIController.PursuitMode.Lag,  targetPos, targetVel, firerPos, 820f);
+            Vector3 midpoint = (lead + lag) * 0.5f;
+            // Midpoint of lead and lag should be the target position.
+            Assert.AreEqual(targetPos.x, midpoint.x, 0.001f);
+            Assert.AreEqual(targetPos.y, midpoint.y, 0.001f);
+            Assert.AreEqual(targetPos.z, midpoint.z, 0.001f);
+        }
     }
 }
 

@@ -28,6 +28,13 @@ namespace AcesOverTheLines.AI
     {
         public enum State { Patrol, Search, Engage, Evade, Disengage, RTB, Climb, Recover }
 
+        // Engagement pursuit modes selected by SelectPursuitMode (§6.2 of
+        // docs/AI-STATE-OF-PLAY.md). Lead = nose ahead of target for gun
+        // solution; Lag = nose behind target's track, preserve energy and
+        // re-position; Pure = nose on target, close range fast at the cost
+        // of energy. Round 6 Commit 1.
+        public enum PursuitMode { Lead, Lag, Pure }
+
         [SerializeField] Transform target;
         [SerializeField] float decisionRateHz = 5f;
         [SerializeField] bool showAIDebug = true;
@@ -123,6 +130,8 @@ namespace AcesOverTheLines.AI
         float _diagSpeed;
         float _diagAltitude;
         double _diagThrottle;
+        PursuitMode _diagPursuitMode = PursuitMode.Lead;
+        double _diagDeltaE = 0.0;
         float _lastFireTime = -10f;
         int _initialAmmoTotal;
 
@@ -184,7 +193,10 @@ namespace AcesOverTheLines.AI
             {
                 _lastCmdLogTime = Time.time;
                 float speed = _rb != null ? _rb.linearVelocity.magnitude : 0f;
-                Debug.Log($"[AI-CMD] state={_state}  set(bnk={setpoint.DesiredBankRad:F2} ptc={setpoint.DesiredPitchRad:F2} spd={setpoint.DesiredAirspeedMs:F0} fire={(setpoint.Fire ? 1 : 0)})  out(ail={cmd.Aileron:F2} elv={cmd.Elevator:F2} thr={cmd.Throttle:F2})  alt={_diagAltitude:F0}  vy={_rb?.linearVelocity.y ?? 0f:F1}  v={speed:F1}");
+                string engageDiag = _state == State.Engage
+                    ? $"  mode={_diagPursuitMode}  ΔE={_diagDeltaE:F0}m"
+                    : "";
+                Debug.Log($"[AI-CMD] state={_state}  set(bnk={setpoint.DesiredBankRad:F2} ptc={setpoint.DesiredPitchRad:F2} spd={setpoint.DesiredAirspeedMs:F0} fire={(setpoint.Fire ? 1 : 0)})  out(ail={cmd.Aileron:F2} elv={cmd.Elevator:F2} thr={cmd.Throttle:F2})  alt={_diagAltitude:F0}  vy={_rb?.linearVelocity.y ?? 0f:F1}  v={speed:F1}{engageDiag}");
             }
 
             return cmd;
@@ -406,33 +418,84 @@ namespace AcesOverTheLines.AI
             };
         }
 
+        // Round 6 Commit 1 — §6 DoEngage rewrite.
+        // Computes energy state, selects pursuit mode (Lead/Lag/Pure), and emits
+        // a setpoint computed from the chosen pursuit point. Multi-window firing
+        // decision is unchanged from the previous implementation — fire-window
+        // deflection caps naturally filter shots that lag-mode produces, so no
+        // explicit mode-based fire gate is needed. See docs/AI-STATE-OF-PLAY.md
+        // §6.3.
+        //
+        // Airspeed multipliers per §6.3:
+        //   Lead = 1.00 × engageAirspeedMs
+        //   Lag  = 0.85 × engageAirspeedMs (bleed off speed to tighten lag turn)
+        //   Pure = 1.10 × engageAirspeedMs (close fast, capped at sustainable
+        //          airframe limit — §6.3 specified 1.15 but Fokker D.VII level-
+        //          flight top speed ≈ 1.1 × cruise; the 1.15 setpoint cannot be
+        //          achieved in straight-and-level so we cap at the achievable
+        //          1.10 to avoid PID throttle wind-up).
         FlightSetpoint DoEngage()
         {
             if (target == null || _rb == null)
                 return new FlightSetpoint { DesiredAirspeedMs = patrolAirspeedMs };
 
-            float range = Vector3.Distance(target.position, _rb.position);
-            Vector3 leadPoint = ComputeLeadPoint(
-                target.position,
-                _targetRb != null ? _targetRb.linearVelocity : Vector3.zero,
-                _rb.position,
-                MuzzleVelocity());
+            const float LAG_AIRSPEED_FRACTION  = 0.85f;
+            const float PURE_AIRSPEED_FRACTION = 1.10f;
 
-            Vector3 toLeadWorld = (leadPoint - _rb.position).normalized;
-            Vector3 toLeadBody  = Quaternion.Inverse(_rb.rotation) * toLeadWorld;
+            // --- Energy state ---
+            double selfAlt = _rb.position.y;
+            double selfSpd = _rb.linearVelocity.magnitude;
+            double selfEnergy = ComputeEnergyState(selfAlt, selfSpd);
+
+            double targetAlt = target.position.y;
+            double targetSpd = _targetRb != null ? _targetRb.linearVelocity.magnitude : 0.0;
+            double targetEnergy = ComputeEnergyState(targetAlt, targetSpd);
+
+            double deltaE = selfEnergy - targetEnergy;
+
+            // --- Geometry ---
+            float range = Vector3.Distance(target.position, _rb.position);
+            Vector3 targetForward = target.forward;
+            Vector3 targetToSelf  = _rb.position - target.position;
+            float aspectDeg = ComputeAspectAngleDeg(targetForward, targetToSelf);
+
+            // --- Pursuit mode ---
+            PursuitMode mode = SelectPursuitMode(
+                deltaE, aspectDeg, range, closeFireRangeM, visualRangeM);
+
+            // --- Pursuit point and setpoint ---
+            Vector3 targetVel = _targetRb != null ? _targetRb.linearVelocity : Vector3.zero;
+            Vector3 pursuitPoint = ComputePursuitPoint(
+                mode, target.position, targetVel, _rb.position, MuzzleVelocity());
+
+            Vector3 toPursuitWorld = (pursuitPoint - _rb.position).normalized;
+            Vector3 toPursuitBody  = Quaternion.Inverse(_rb.rotation) * toPursuitWorld;
 
             // Body frame: +x forward, +y up, +z right.
-            // atan2(z, x) is the yaw angle to lead point: positive when
-            // lead is to the right → bank right (positive setpoint).
-            // atan2(y, x) is the pitch angle to lead: positive when lead
-            // is above the body x-axis → pitch up.
-            double bank  = Mathf.Atan2(toLeadBody.z, toLeadBody.x);
-            double pitch = Mathf.Atan2(toLeadBody.y, toLeadBody.x);
+            // atan2(z, x) is the yaw angle to pursuit point: positive when point
+            // is to the right → bank right (positive setpoint). atan2(y, x) is
+            // the pitch angle to pursuit point: positive when above the body
+            // x-axis → pitch up.
+            double bank  = Mathf.Atan2(toPursuitBody.z, toPursuitBody.x);
+            double pitch = Mathf.Atan2(toPursuitBody.y, toPursuitBody.x);
             bank  = Mathf.Clamp((float)bank,  -engageBankClampRad,  engageBankClampRad);
             pitch = Mathf.Clamp((float)pitch, -engagePitchClampRad, engagePitchClampRad);
 
-            // Multi-window firing decision (unchanged).
-            float deflectionDeg = Vector3.Angle(_rb.rotation * new Vector3(1f, 0f, 0f), toLeadWorld);
+            // Mode-specific airspeed setpoint.
+            double airspeed;
+            switch (mode)
+            {
+                case PursuitMode.Lag:  airspeed = engageAirspeedMs * LAG_AIRSPEED_FRACTION;  break;
+                case PursuitMode.Pure: airspeed = engageAirspeedMs * PURE_AIRSPEED_FRACTION; break;
+                case PursuitMode.Lead:
+                default:               airspeed = engageAirspeedMs;                          break;
+            }
+
+            // --- Firing decision (unchanged from prior implementation) ---
+            // The fire-window deflection caps (25°/15°/60°) naturally filter
+            // shots that lag-mode produces; no explicit mode gate needed.
+            float deflectionDeg = Vector3.Angle(
+                _rb.rotation * new Vector3(1f, 0f, 0f), toPursuitWorld);
             float dt = Time.fixedDeltaTime;
             if (deflectionDeg > 30f) _noFiringSolutionTime += dt;
             else _noFiringSolutionTime = Mathf.Max(0f, _noFiringSolutionTime - dt);
@@ -443,14 +506,17 @@ namespace AcesOverTheLines.AI
                 closeFireRangeM, closeFireDeflectionDeg,
                 snapFireRangeM,  snapFireDeflectionDeg);
 
+            // --- Diagnostic state cache ---
             _diagRange = range;
             _diagDeflectionDeg = deflectionDeg;
+            _diagPursuitMode = mode;
+            _diagDeltaE = deltaE;
 
             return new FlightSetpoint
             {
                 DesiredBankRad    = bank,
                 DesiredPitchRad   = pitch,
-                DesiredAirspeedMs = engageAirspeedMs,
+                DesiredAirspeedMs = airspeed,
                 Fire = fire,
             };
         }
@@ -715,6 +781,71 @@ namespace AcesOverTheLines.AI
             if (speedMs < energyLowSpeedMs && altitudeM < energyLowAltitudeM) conditions++;
             if (noSolutionTimeS > lostGeometrySeconds) conditions++;
             return conditions;
+        }
+
+        // ============================================================
+        // §6 DoEngage rewrite — static testable helpers (Round 6 Commit 1)
+        // ============================================================
+
+        // Specific energy in altitude-equivalent metres: E_s = h + v² / (2g).
+        // Collapses altitude and airspeed into a single comparable scalar so
+        // two aircraft's relative energy state can be expressed as a delta.
+        // Per §6.1 of docs/AI-STATE-OF-PLAY.md.
+        public static double ComputeEnergyState(double altitudeM, double speedMs)
+        {
+            const double G = 9.81;
+            return altitudeM + (speedMs * speedMs) / (2.0 * G);
+        }
+
+        // Aspect angle: off-tail angle of attacker as seen from target's velocity
+        // vector. 0° = directly astern of target (best gun position), 90° = beam,
+        // 180° = head-on. Per §6.2 of docs/AI-STATE-OF-PLAY.md.
+        public static float ComputeAspectAngleDeg(Vector3 targetForward, Vector3 targetToSelf)
+        {
+            return Vector3.Angle(targetForward, targetToSelf);
+        }
+
+        // Pursuit-mode selection per §6.2's decision tree (first match wins):
+        //   1. aspect > 120°                              → Lag (doctrinal floor)
+        //   2. ΔE < 0                                     → Lag (preserve energy)
+        //   3. aspect > 90° AND range > closeFireRangeM   → Lag (re-position)
+        //   4. range > 0.4 × visualRangeM AND ΔE > 50m    → Pure (close)
+        //   5. else                                       → Lead (gun)
+        public static PursuitMode SelectPursuitMode(
+            double deltaE, float aspectDeg, float rangeM,
+            float closeFireRangeM, float visualRangeM)
+        {
+            if (aspectDeg > 120f)                                       return PursuitMode.Lag;
+            if (deltaE < 0.0)                                           return PursuitMode.Lag;
+            if (aspectDeg > 90f && rangeM > closeFireRangeM)            return PursuitMode.Lag;
+            if (rangeM > 0.4f * visualRangeM && deltaE > 50.0)          return PursuitMode.Pure;
+            return PursuitMode.Lead;
+        }
+
+        // Compute the world-frame point the attacker should point its nose at,
+        // given the pursuit mode. Lead extrapolates the target's track forward
+        // by bullet time-of-flight (existing math). Lag extrapolates BACKWARD
+        // by the same magnitude so the nose tracks behind the target. Pure
+        // points directly at the target's current position. Per §6.3.
+        public static Vector3 ComputePursuitPoint(
+            PursuitMode mode,
+            Vector3 targetPos, Vector3 targetVel,
+            Vector3 firerPos, float muzzleVelocity)
+        {
+            switch (mode)
+            {
+                case PursuitMode.Pure:
+                    return targetPos;
+                case PursuitMode.Lag:
+                {
+                    float range = Vector3.Distance(targetPos, firerPos);
+                    float bulletTime = range / Mathf.Max(1f, muzzleVelocity);
+                    return targetPos - targetVel * bulletTime;
+                }
+                case PursuitMode.Lead:
+                default:
+                    return ComputeLeadPoint(targetPos, targetVel, firerPos, muzzleVelocity);
+            }
         }
     }
 }
