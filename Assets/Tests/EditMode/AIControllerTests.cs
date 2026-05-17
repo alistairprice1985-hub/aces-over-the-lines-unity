@@ -538,5 +538,79 @@ namespace AcesOverTheLines.Aircraft.Tests
             Assert.IsFalse(AIController.ShouldEnterEngageFromPatrol(targetExists: false),
                 "With no target reference, Patrol must not transition.");
         }
+
+        // ---- Clock-injection hook (2026-05-17, prep for playtest harness) ----
+
+        [Test]
+        public void NowSecondsSource_WhenOverridden_DrivesEngageDwell()
+        {
+            // Verifies that NowSecondsSource genuinely flows into the time-
+            // based logic by checking that _stateEnteredTime gets stamped
+            // with the injected clock value, not Time.time. If this
+            // assertion ever fires, a Time.time read has been reintroduced
+            // somewhere in the state-transition path and the playtest
+            // harness will lose determinism.
+
+            var aiGo = new GameObject("AI_ClockTest");
+            aiGo.transform.position = new Vector3(0f, 1000f, 0f);
+            var aiRb = aiGo.AddComponent<Rigidbody>();
+            aiRb.position = new Vector3(0f, 1000f, 0f);
+            aiRb.isKinematic = true;  // prevent gravity drift during the test
+            var ai = aiGo.AddComponent<AIController>();
+            var targetGo = new GameObject("Target_ClockTest");
+
+            try
+            {
+                // Unity's EditMode test runner does not auto-fire
+                // MonoBehaviour lifecycle methods. Manually invoke Awake
+                // so _rb / _stabilizer get initialised — otherwise
+                // UpdateStateTransitions early-outs on `_rb == null`.
+                var awakeMethod = typeof(AIController).GetMethod("Awake",
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance);
+                awakeMethod.Invoke(ai, null);
+
+                // Override the clock with a controllable scalar. Initial
+                // 100s is well past the 5 Hz decision-rate gate (>= 0.2s),
+                // so the first ReadControls call triggers a state machine
+                // tick.
+                float fakeClock = 100.0f;
+                ai.NowSecondsSource = () => fakeClock;
+                // Place target 500 m away at the same altitude so the
+                // Engage branch's nested checks don't immediately route
+                // us elsewhere: range (500m) > engageBreakOffRangeM (60m)
+                // skips the collision-avoidance check; AI altitude (1000m)
+                // > climbFloorAltitude (700m) skips the floor check.
+                targetGo.transform.position = new Vector3(0f, 1000f, 500f);
+                ai.Target = targetGo.transform;
+
+                // Initial state is Patrol with _stateEnteredTime defaulted
+                // to 0. ReadControls → UpdateStateTransitions → Patrol →
+                // Engage (target exists, Issue 1 gate-less policy), which
+                // calls TransitionIfChanged with NowSeconds = 100.0f.
+                ai.ReadControls(1.0 / 120.0);
+
+                Assert.AreEqual(AIController.State.Engage, ai.CurrentState,
+                    "Patrol→Engage should fire on first decision tick with a target present.");
+                Assert.AreEqual(100.0f, ai.StateEnteredTime, 1e-4f,
+                    "TransitionIfChanged must stamp _stateEnteredTime from " +
+                    "NowSecondsSource, not Time.time. If this fires, a stray " +
+                    "Time.time read has snuck back into the transition path.");
+
+                // Advance the injected clock and verify the engage-dwell
+                // computation reads it. Engage dwell at this point is
+                // 105.5 - 100.0 = 5.5s, well below the 25s stalemate
+                // timeout, so state must remain Engage.
+                fakeClock = 105.5f;
+                ai.ReadControls(1.0 / 120.0);
+                Assert.AreEqual(AIController.State.Engage, ai.CurrentState,
+                    "5.5s dwell is below the 25s stalemate timeout; state should remain Engage.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(aiGo);
+                Object.DestroyImmediate(targetGo);
+            }
+        }
     }
 }

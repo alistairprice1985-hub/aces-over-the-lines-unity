@@ -174,6 +174,22 @@ namespace AcesOverTheLines.AI
         public State CurrentState => _state;
         public Transform Target { get => target; set { target = value; _targetRb = target != null ? target.GetComponent<Rigidbody>() : null; } }
 
+        // Testability hook (added 2026-05-17 alongside the playtest harness
+        // work). NowSecondsSource defaults to UnityEngine.Time.time so
+        // production behaviour is byte-identical to before the indirection.
+        // EditMode playtest harnesses replace it with a deterministic
+        // counter so every clock-driven gate (decision rate, dwell timers,
+        // mode-switch hysteresis, burst-fire latch) advances under explicit
+        // control instead of wall-clock. Instance-level (not static) so
+        // parallel test fixtures cannot pollute each other's clocks.
+        public System.Func<float> NowSecondsSource { get; set; } = () => UnityEngine.Time.time;
+        float NowSeconds => NowSecondsSource();
+
+        // Internal observable for the clock-injection test; never read
+        // from production code. Promoted from a bare _stateEnteredTime
+        // read via InternalsVisibleTo rather than going public.
+        internal float StateEnteredTime => _stateEnteredTime;
+
         void Awake()
         {
             _ctrl = GetComponent<AircraftController>();
@@ -200,9 +216,9 @@ namespace AcesOverTheLines.AI
         public ControlInput ReadControls(double dt)
         {
             // Strategic-level decisions tick at 5 Hz.
-            if (Time.time - _lastDecisionTime >= 1f / decisionRateHz)
+            if (NowSeconds - _lastDecisionTime >= 1f / decisionRateHz)
             {
-                _lastDecisionTime = Time.time;
+                _lastDecisionTime = NowSeconds;
                 UpdateStateTransitions();
             }
 
@@ -234,13 +250,13 @@ namespace AcesOverTheLines.AI
                 _diagAltitude = _rb.position.y;
             }
             _diagThrottle = cmd.Throttle;
-            if (cmd.Fire) _lastFireTime = Time.time;
+            if (cmd.Fire) _lastFireTime = NowSeconds;
 
             // Throttled per-tick log: setpoint → stabilizer output. Same
             // 0.5 Hz cadence and logStateTransitions gate as before.
-            if (logStateTransitions && Time.time - _lastCmdLogTime >= 0.5f)
+            if (logStateTransitions && NowSeconds - _lastCmdLogTime >= 0.5f)
             {
-                _lastCmdLogTime = Time.time;
+                _lastCmdLogTime = NowSeconds;
                 float speed = _rb != null ? _rb.linearVelocity.magnitude : 0f;
                 string engageDiag = _state == State.Engage
                     ? $"  mode={_diagPursuitMode}  ΔE={_diagDeltaE:F0}m"
@@ -312,7 +328,7 @@ namespace AcesOverTheLines.AI
 
                 case State.Engage:
                 {
-                    float engageDwell = Time.time - _stateEnteredTime;
+                    float engageDwell = NowSeconds - _stateEnteredTime;
 
                     // Fix 1: forced reset if Engage has dwelled past the
                     // stalemate timeout AND no firing solution has been
@@ -351,7 +367,7 @@ namespace AcesOverTheLines.AI
                 }
 
                 case State.Evade:
-                    if (Time.time - _stateEnteredTime > evadeDurationS)
+                    if (NowSeconds - _stateEnteredTime > evadeDurationS)
                         TransitionIfChanged(State.Engage);
                     break;
 
@@ -364,7 +380,7 @@ namespace AcesOverTheLines.AI
                     // returns the angle between body-forward and the
                     // direction to target, which is the same scalar as
                     // |DeltaAngle(ownHeading, bearingToTarget)|.
-                    float disengageDwell = Time.time - _stateEnteredTime;
+                    float disengageDwell = NowSeconds - _stateEnteredTime;
                     float headingDelta = BearingToTargetDeg();
                     if (range > disengageMinRange
                         && disengageDwell > disengageMinDwell
@@ -384,9 +400,9 @@ namespace AcesOverTheLines.AI
         {
             if (_state == newState) return;
             var prevState = _state;
-            float elapsedInPrev = Time.time - _stateEnteredTime;
+            float elapsedInPrev = NowSeconds - _stateEnteredTime;
             _state = newState;
-            _stateEnteredTime = Time.time;
+            _stateEnteredTime = NowSeconds;
             _noFiringSolutionTime = 0f;
             _timeSinceFiringSolution = 0f;
             if (newState == State.Engage && _rb != null)
@@ -539,9 +555,9 @@ namespace AcesOverTheLines.AI
                 if (rawMode != _modeCandidate)
                 {
                     _modeCandidate = rawMode;
-                    _modeCandidateSince = Time.time;
+                    _modeCandidateSince = NowSeconds;
                 }
-                else if (Time.time - _modeCandidateSince >= modeSwitchHoldTime)
+                else if (NowSeconds - _modeCandidateSince >= modeSwitchHoldTime)
                 {
                     _committedMode = rawMode;
                 }
@@ -596,13 +612,13 @@ namespace AcesOverTheLines.AI
             bool fire;
             if (inEntryCone)
             {
-                _burstUntil = Mathf.Max(_burstUntil, Time.time + burstMinDuration);
+                _burstUntil = Mathf.Max(_burstUntil, NowSeconds + burstMinDuration);
                 _timeSinceFiringSolution = 0f;     // Fix 1 hook
                 fire = true;
             }
             else
             {
-                fire = Time.time < _burstUntil && inHoldCone;
+                fire = NowSeconds < _burstUntil && inHoldCone;
                 if (!fire) _timeSinceFiringSolution += dt;
             }
 
@@ -671,7 +687,7 @@ namespace AcesOverTheLines.AI
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Deflection: {_diagDeflectionDeg,6:F1}°"); y += LH;
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Speed:      {_diagSpeed,6:F1} m/s"); y += LH;
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Altitude:   {_diagAltitude * 3.28084f,6:F0} ft"); y += LH;
-            bool firedRecently = Time.time - _lastFireTime < 1.0f;
+            bool firedRecently = NowSeconds - _lastFireTime < 1.0f;
             GUI.Label(new Rect(x + 8, y, W - 16, LH), $"Throttle:   {_diagThrottle,6:F2}   Fire: {(firedRecently ? "●" : "○")}");
         }
 
