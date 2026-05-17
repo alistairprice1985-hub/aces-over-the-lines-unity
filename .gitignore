@@ -110,3 +110,8 @@ InitTestScene*.unity*
 
 # Playtest logs are archival evidence, NOT Unity debug output -- keep
 !/docs/playtests/*.log
+
+# Playtest harness per-run telemetry CSVs. Regenerated on every failed
+# scenario test for post-run inspection; never committed.
+/[Aa]ssets/[Tt]ests/[Pp]laytest[Hh]arness/[Oo]utput/
+/[Aa]ssets/[Tt]ests/[Pp]laytest[Hh]arness/[Oo]utput.meta
