@@ -504,5 +504,39 @@ namespace AcesOverTheLines.Aircraft.Tests
                 noSolutionTimeS: 0f, lostGeometrySeconds: 4f);
             Assert.AreEqual(1, c);
         }
+
+        // ---- 2026-05-17 playtest fixes (Round 6 Commit 3) ----
+
+        [Test]
+        public void EngageSetpoint_HighEnergyAdvantage_LeadModePitchIsNeutral()
+        {
+            // Issue 2: with ΔE=+200m the AI has more than enough energy
+            // advantage. Whatever pursuit mode the selector chose
+            // (Lead in this scenario, but the gate is mode-independent),
+            // the engage setpoint must back off the aggressive bleed pair
+            // (pitch=-0.50, spd=47) and use the reposition pair
+            // (pitch=-0.10, spd=55).
+            var (pitch, airspeed) = AIController.ApplyEnergyBleedGate(
+                deltaE: 200.0, lagBleedMaxDeltaE: 100f);
+            Assert.AreEqual(-0.10, pitch, 1e-6,
+                "ΔE=200m must produce the neutral pitch setpoint, not the bleed setpoint.");
+            Assert.AreEqual(55.0, airspeed, 1e-6,
+                "ΔE=200m must produce the reposition airspeed, not the bleed airspeed.");
+        }
+
+        [Test]
+        public void PatrolGate_EngagesEvenAtRangeBeyondVisualRangeM()
+        {
+            // Issue 1: Patrol→Engage no longer gates on range or bearing.
+            // A target reference is sufficient. Pre-fix, range=2000m
+            // (> visualRangeM=1000m) blocked the transition indefinitely
+            // and the AI flew straight while the bandit escaped.
+            // ShouldEnterEngageFromPatrol takes no range parameter
+            // because range is no longer consulted.
+            Assert.IsTrue(AIController.ShouldEnterEngageFromPatrol(targetExists: true),
+                "With a target reference, Patrol must transition to Engage regardless of range.");
+            Assert.IsFalse(AIController.ShouldEnterEngageFromPatrol(targetExists: false),
+                "With no target reference, Patrol must not transition.");
+        }
     }
 }

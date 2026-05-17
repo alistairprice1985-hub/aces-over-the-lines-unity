@@ -56,7 +56,12 @@ namespace AcesOverTheLines.AI
         [SerializeField] float patrolCruisePitchRad = 0.05f;  // ≈2.9° — pitch at wings level (cruise, no bank-coupled lift loss)
         [SerializeField] float patrolAirspeedMs     = 55f;   // matches engageAirspeedMs — keep throttle PID active
         [SerializeField] float climbPitchRad       = 0.3f;
-        [SerializeField] float climbAirspeedMs     = 45f;
+        // 2026-05-17 playtest fix (Issue 3a): bumped from 45 to 60 so the
+        // throttle PID commands ~full power during Climb. The previous 45
+        // setpoint was below typical Engage→Climb entry speed (~53–55 m/s),
+        // so the PID idled the throttle (logged thr=0.00) just when the AI
+        // needed to climb out hardest.
+        [SerializeField] float climbAirspeedMs     = 60f;
 
         // Three firing windows (any matching window fires when burst is on).
         [SerializeField] float farFireRangeM = 300f;
@@ -147,7 +152,6 @@ namespace AcesOverTheLines.AI
         bool _burstOn;
         float _engageEntryAltitude;
         float _lastCmdLogTime = -10f;
-        float _lastPatrolGateLogTime;
 
         // Round 6 Commit 2 — stalemate-timeout tracker and burst-fire latch.
         float _timeSinceFiringSolution;
@@ -210,6 +214,19 @@ namespace AcesOverTheLines.AI
                 : new ControlInput { Throttle = 0.7, Fire = setpoint.Fire };
             cmd.Fire = setpoint.Fire;
 
+            // 2026-05-17 playtest fix (Issue 3b): cap aileron during Climb.
+            // Climb inherits whatever bank the aircraft was carrying out of
+            // Engage. FlightStabilizer.Reset already zeros the roll PID on
+            // state change, but the rate-limited output still ramped to
+            // ail=0.80 in playtest as the PID worked to null a large bank
+            // error. Clamping the output during the recovery state prevents
+            // the stick-slam without changing the PID's internal behaviour.
+            if (_state == State.Climb)
+            {
+                if (cmd.Aileron >  0.30) cmd.Aileron =  0.30;
+                if (cmd.Aileron < -0.30) cmd.Aileron = -0.30;
+            }
+
             // Cache diagnostic state for the OnGUI overlay.
             if (_rb != null)
             {
@@ -261,7 +278,6 @@ namespace AcesOverTheLines.AI
             if (target == null) { TransitionIfChanged(State.Patrol); return; }
 
             float range = Vector3.Distance(target.position, _rb.position);
-            float bearing = BearingToTargetDeg();
 
             switch (_state)
             {
@@ -282,28 +298,17 @@ namespace AcesOverTheLines.AI
 
                 case State.Patrol:
                 case State.Search:
-                {
-                    bool gateFires = range < visualRangeM && bearing < frontHemisphereDeg;
-                    if (gateFires)
-                    {
+                    // 2026-05-17 playtest fix (Issue 1): the legacy
+                    // (range < visualRangeM && bearing < frontHemisphereDeg)
+                    // gate turned Patrol into a permanent dead-end once
+                    // the target drifted past 1000 m. ShouldEnterEngage
+                    // FromPatrol now expresses the policy: target alone
+                    // is sufficient. The earlier-out above already routes
+                    // back to Patrol when target == null, so target is
+                    // non-null here.
+                    if (ShouldEnterEngageFromPatrol(target != null))
                         TransitionIfChanged(State.Engage);
-                    }
-                    else if (logStateTransitions
-                             && Time.time - _lastPatrolGateLogTime >= 1.0f)
-                    {
-                        // 1 Hz gated log: capture exactly which condition failed so
-                        // a tail of identical Patrol [AI-CMD] entries is no longer
-                        // diagnostically opaque. Round 5 Commit 8.
-                        _lastPatrolGateLogTime = Time.time;
-                        string failReason =
-                            target == null ? "target=null"
-                            : !(range < visualRangeM) ? $"range={range:F0}m >= visualRangeM={visualRangeM:F0}"
-                            : !(bearing < frontHemisphereDeg) ? $"bearing={bearing:F1}° >= frontHemisphereDeg={frontHemisphereDeg:F1}°"
-                            : "unknown";
-                        Debug.Log($"[AI-GATE] {_state} → Engage gate FAIL: {failReason}  (range={range:F0}m  bearing={bearing:F1}°  target={(target == null ? "null" : target.name)})");
-                    }
                     break;
-                }
 
                 case State.Engage:
                 {
@@ -504,9 +509,6 @@ namespace AcesOverTheLines.AI
             if (target == null || _rb == null)
                 return new FlightSetpoint { DesiredAirspeedMs = patrolAirspeedMs };
 
-            const float LAG_AIRSPEED_FRACTION  = 0.85f;
-            const float PURE_AIRSPEED_FRACTION = 1.10f;
-
             // --- Energy state ---
             double selfAlt = _rb.position.y;
             double selfSpd = _rb.linearVelocity.magnitude;
@@ -568,27 +570,15 @@ namespace AcesOverTheLines.AI
             bank  = Mathf.Clamp((float)bank,  -engageBankClampRad,  engageBankClampRad);
             pitch = Mathf.Clamp((float)pitch, -engagePitchClampRad, engagePitchClampRad);
 
-            // Mode-specific airspeed setpoint.
-            double airspeed;
-            switch (mode)
-            {
-                case PursuitMode.Lag:  airspeed = engageAirspeedMs * LAG_AIRSPEED_FRACTION;  break;
-                case PursuitMode.Pure: airspeed = engageAirspeedMs * PURE_AIRSPEED_FRACTION; break;
-                case PursuitMode.Lead:
-                default:               airspeed = engageAirspeedMs;                          break;
-            }
-
-            // Fix 3b: Lag energy-bleed gate. The 2026-05-17 playtest saw the
-            // AI commanding ptc=-0.50 and spd=47 while ΔE was already +498m.
-            // With that much energy advantage, Lag should re-position for a
-            // gunshot, not dump altitude. Below lagBleedMaxDeltaE we honour
-            // the original aggressive bleed; above, we soften both axes.
-            if (mode == PursuitMode.Lag)
-            {
-                bool allowEnergyBleed = deltaE < lagBleedMaxDeltaE;
-                pitch    = allowEnergyBleed ? -0.50 : -0.10;
-                airspeed = allowEnergyBleed ?  47.0 :  55.0;
-            }
+            // 2026-05-17 playtest fix (Issue 2): mode-independent
+            // energy-bleed gate. The legacy Lag-only gate left Lead and
+            // Pure free to command ptc=-0.50 spd=47 with +498m of energy
+            // already ahead of the target. The gate now applies to all
+            // three pursuit modes; mode still determines bank (via
+            // pursuit-point geometry), pitch/airspeed are ΔE-driven.
+            var bleed = ApplyEnergyBleedGate(deltaE, lagBleedMaxDeltaE);
+            pitch = bleed.pitch;
+            double airspeed = bleed.airspeed;
 
             // --- Firing decision (Fix 4: cone-latch burst) ---
             // Replaces the per-tick burst-cycle toggle that produced
@@ -930,6 +920,33 @@ namespace AcesOverTheLines.AI
             if (aspectDeg > 90f && rangeM > closeFireRangeM)            return PursuitMode.Lag;
             if (rangeM > 0.4f * visualRangeM && deltaE > 50.0)          return PursuitMode.Pure;
             return PursuitMode.Lead;
+        }
+
+        // 2026-05-17 playtest fix (Issue 1). Patrol/Search → Engage policy.
+        // The legacy gate (range < visualRangeM && bearing < frontHemisphereDeg)
+        // deadlocked Patrol once the target drifted past visual range — the AI
+        // would fly straight indefinitely while the bandit escaped. Policy now:
+        // a target reference is sufficient. UpdateStateTransitions routes back
+        // to Patrol when target == null at its top-of-tick early-out.
+        public static bool ShouldEnterEngageFromPatrol(bool targetExists)
+        {
+            return targetExists;
+        }
+
+        // 2026-05-17 playtest fix (Issue 2). Energy-bleed gate, mode-independent.
+        // When the AI has an energy advantage above lagBleedMaxDeltaE, soften
+        // the pitch/airspeed setpoint to reposition horizontally rather than
+        // dump altitude. Pre-fix this gate lived only in the Lag branch, so
+        // Lead and Pure could command ptc=-0.50 spd=47 with +498m of energy
+        // already ahead of the target.
+        public static (double pitch, double airspeed) ApplyEnergyBleedGate(
+            double deltaE, float lagBleedMaxDeltaE)
+        {
+            bool allowEnergyBleed = deltaE < lagBleedMaxDeltaE;
+            return (
+                allowEnergyBleed ? -0.50 : -0.10,
+                allowEnergyBleed ?  47.0 :  55.0
+            );
         }
 
         // Compute the world-frame point the attacker should point its nose at,
