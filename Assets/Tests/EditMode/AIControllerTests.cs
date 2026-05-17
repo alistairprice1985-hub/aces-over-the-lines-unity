@@ -612,5 +612,257 @@ namespace AcesOverTheLines.Aircraft.Tests
                 Object.DestroyImmediate(targetGo);
             }
         }
+
+        // ---- Phase 2 doctrine selector tests (2026-05-17) ----
+        //
+        // These exercise the selector logic in isolation. Each test builds
+        // a minimal AI rig (Rigidbody + AIController), invokes Awake
+        // manually (EditMode test runner does not fire MonoBehaviour
+        // lifecycle methods), drives state via direct ReadControls calls
+        // with an injected clock, and asserts on the internal doctrine
+        // state via the InternalsVisibleTo accessors.
+
+        static (GameObject aiGo, AIController ai, GameObject targetGo, Rigidbody aiRb)
+            SpawnSelectorRig(float aiAltitude, float targetAltitude, float targetRangeZ)
+        {
+            var aiGo = new GameObject("AI_SelectorTest");
+            aiGo.transform.position = new Vector3(0f, aiAltitude, 0f);
+            var aiRb = aiGo.AddComponent<Rigidbody>();
+            aiRb.position = new Vector3(0f, aiAltitude, 0f);
+            aiRb.isKinematic = true;
+            var ai = aiGo.AddComponent<AIController>();
+            var targetGo = new GameObject("Target_SelectorTest");
+            targetGo.transform.position = new Vector3(0f, targetAltitude, targetRangeZ);
+            // Manually invoke Awake — Unity EditMode test runner skips it.
+            var awake = typeof(AIController).GetMethod("Awake",
+                System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Instance);
+            awake.Invoke(ai, null);
+            return (aiGo, ai, targetGo, aiRb);
+        }
+
+        // Drives the AI from Patrol → Engage at the injected clock. Returns
+        // when CurrentState == Engage. Throws if it doesn't happen on the
+        // first ReadControls (target is set, gate has no range condition).
+        static void EnterEngageAt(AIController ai, float clockValue, ref float clock)
+        {
+            clock = clockValue;
+            ai.ReadControls(1.0 / 120.0);
+            Assert.AreEqual(AIController.State.Engage, ai.CurrentState,
+                $"Test setup: expected immediate Patrol→Engage at clock={clockValue}");
+        }
+
+        [Test]
+        public void SelectorEvaluation_FromBoomZoom_TargetHardTurning_SwitchesAfterHysteresis()
+        {
+            // Target sustains a > 30° bank for > 2 seconds (the
+            // "hard-turning" threshold). After 1s of candidate hysteresis,
+            // the selector should commit to Angles.
+            var (aiGo, ai, targetGo, _) = SpawnSelectorRig(
+                aiAltitude: 1000f, targetAltitude: 1000f, targetRangeZ: 500f);
+            try
+            {
+                float clock = 100f;
+                ai.NowSecondsSource = () => clock;
+                ai.Target = targetGo.transform;
+                EnterEngageAt(ai, 100f, ref clock);
+
+                Assert.AreEqual(AIController.EngageDoctrine.BoomZoom, ai.CurrentDoctrine,
+                    "Fresh Engage entry should start in BoomZoom.");
+
+                // Bank the target to 45° (above the 30° hard-turn threshold).
+                // Rotation is bank-only around the body forward axis (X in
+                // this codebase's convention).
+                targetGo.transform.rotation = Quaternion.AngleAxis(45f, Vector3.right);
+
+                // Tick the selector at the 5 Hz strategic rate (0.2s per tick).
+                // After 2s the target qualifies as hard-turning; after a
+                // further 1s the candidate hysteresis commits. Loop extends
+                // to t=105 to provide margin for float-precision drift in
+                // the 0.2s strategic-tick gate, which can cause a tick to
+                // skip in the borderline diff-vs-threshold comparison.
+                for (float t = 100.2f; t <= 105.0f; t += 0.2f)
+                {
+                    clock = t;
+                    ai.ReadControls(1.0 / 120.0);
+                }
+
+                Assert.AreEqual(AIController.EngageDoctrine.Angles, ai.CurrentDoctrine,
+                    "After 2s hard-turn + 1s hysteresis, selector should commit to Angles.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(aiGo);
+                Object.DestroyImmediate(targetGo);
+            }
+        }
+
+        [Test]
+        public void SelectorEvaluation_FromAngles_EnergyDeficit_SwitchesBackAfterHysteresis()
+        {
+            // AI is in Angles mode. Configure energy state such that
+            // deltaE < -200m (the Angles→BoomZoom switch condition).
+            // Note: cannot test the altitude-floor branch directly here
+            // because dropping AI below climbFloorAltitude=700 triggers
+            // the state-machine's Engage→Climb transition before the
+            // selector's 1s hysteresis can commit — the test would
+            // observe state=Climb, not a doctrine switch.
+            //
+            // Energy deficit is selector-only (no state transition fires
+            // on negative deltaE within Angles), so it's the cleanest
+            // condition to test the back-to-BoomZoom path in isolation.
+            //
+            // AI alt 1000 (above 700 floor, no state transition).
+            // Target alt 2000 with target rigidbody. AI energy ≈ 1000;
+            // target energy ≈ 2000. deltaE ≈ -1000, well below -200.
+            var (aiGo, ai, targetGo, aiRb) = SpawnSelectorRig(
+                aiAltitude: 1000f, targetAltitude: 2000f, targetRangeZ: 500f);
+            try
+            {
+                // Give the target a Rigidbody so the selector's
+                // _targetRb-based energy computation has data; default
+                // zero speed is fine.
+                var targetRb = targetGo.AddComponent<Rigidbody>();
+                targetRb.isKinematic = true;
+                ai.Target = targetGo.transform;
+
+                float clock = 100f;
+                ai.NowSecondsSource = () => clock;
+                EnterEngageAt(ai, 100f, ref clock);
+
+                // Force the AI into Angles mode via reflection.
+                var doctrineField = typeof(AIController).GetField("_engageDoctrine",
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance);
+                doctrineField.SetValue(ai, AIController.EngageDoctrine.Angles);
+                var doctrineEnteredField = typeof(AIController).GetField("_doctrineEnteredTime",
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance);
+                doctrineEnteredField.SetValue(ai, clock);
+
+                Assert.AreEqual(AIController.EngageDoctrine.Angles, ai.CurrentDoctrine);
+
+                // Tick the selector. With energy deficit (target 1000m
+                // above AI, deltaE ≈ -1000m), BoomZoom is the candidate
+                // immediately; after 1s hysteresis it commits.
+                for (float t = 100.2f; t <= 105.0f; t += 0.2f)
+                {
+                    clock = t;
+                    ai.ReadControls(1.0 / 120.0);
+                }
+
+                Assert.AreEqual(AIController.EngageDoctrine.BoomZoom, ai.CurrentDoctrine,
+                    "After energy-deficit breach + 1s hysteresis, selector should commit back to BoomZoom.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(aiGo);
+                Object.DestroyImmediate(targetGo);
+            }
+        }
+
+        [Test]
+        public void SelectorEvaluation_ReverseLockout_PreventsFlap()
+        {
+            // After a doctrine switch, the 3s reverse-lockout suppresses
+            // selector evaluation entirely. Even with conditions that
+            // would normally trigger an immediate switch back, the
+            // doctrine does not change until the lockout expires.
+            //
+            // Uses the energy-deficit Angles→BoomZoom condition (target
+            // way above AI). Cannot use altitude-floor breach because
+            // dropping AI below 700m triggers the state machine's
+            // Engage→Climb transition before the selector matters.
+            var (aiGo, ai, targetGo, _) = SpawnSelectorRig(
+                aiAltitude: 1000f, targetAltitude: 2000f, targetRangeZ: 500f);
+            try
+            {
+                var targetRb = targetGo.AddComponent<Rigidbody>();
+                targetRb.isKinematic = true;
+                ai.Target = targetGo.transform;
+
+                float clock = 100f;
+                ai.NowSecondsSource = () => clock;
+                EnterEngageAt(ai, 100f, ref clock);
+
+                // Force Angles mode AND set _doctrineLastSwitch to NOW —
+                // simulates a just-committed switch.
+                var doctrineField = typeof(AIController).GetField("_engageDoctrine",
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance);
+                doctrineField.SetValue(ai, AIController.EngageDoctrine.Angles);
+                var lastSwitchField = typeof(AIController).GetField("_doctrineLastSwitch",
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance);
+                lastSwitchField.SetValue(ai, clock);
+
+                // Energy deficit is now active (target 1000m above AI),
+                // would normally trigger the back-to-BoomZoom candidate
+                // immediately. But the lockout skips selector evaluation
+                // entirely for 3 seconds.
+                // 2.5s elapsed (still within the 3s lockout).
+                for (float t = 100.2f; t <= 102.4f; t += 0.2f)
+                {
+                    clock = t;
+                    ai.ReadControls(1.0 / 120.0);
+                }
+
+                Assert.AreEqual(AIController.EngageDoctrine.Angles, ai.CurrentDoctrine,
+                    "While within 3s reverse-lockout, no doctrine switch should occur.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(aiGo);
+                Object.DestroyImmediate(targetGo);
+            }
+        }
+
+        [Test]
+        public void SelectorEvaluation_StalemateTrigger_SwitchesToAngles()
+        {
+            // Target NOT hard-turning. timeInDoctrine > 20s AND
+            // _timeSinceFiringSolution > 12s drives the stalemate switch
+            // to Angles. This is the Scenario 1 path — slow level decoy
+            // that B&Z can't fire on.
+            var (aiGo, ai, targetGo, _) = SpawnSelectorRig(
+                aiAltitude: 1000f, targetAltitude: 1000f, targetRangeZ: 500f);
+            try
+            {
+                float clock = 100f;
+                ai.NowSecondsSource = () => clock;
+                ai.Target = targetGo.transform;
+                EnterEngageAt(ai, 100f, ref clock);
+
+                // Reach into _timeSinceFiringSolution and set it high so
+                // the stalemate condition is met as soon as timeInDoctrine
+                // > 20s.
+                var noFireField = typeof(AIController).GetField("_timeSinceFiringSolution",
+                    System.Reflection.BindingFlags.NonPublic |
+                    System.Reflection.BindingFlags.Instance);
+                noFireField.SetValue(ai, 13f);
+
+                // Run the clock forward past the 20s stalemate threshold
+                // and through the 1s hysteresis. Need to keep
+                // _timeSinceFiringSolution high — it gets incremented by
+                // ComputeFiringDecision but might be reset if AI fires.
+                // Target is far (z=500m) — AI won't fire. So the field
+                // only grows naturally.
+                noFireField.SetValue(ai, 13f);
+                for (float t = 100.2f; t <= 122.0f; t += 0.2f)
+                {
+                    clock = t;
+                    ai.ReadControls(1.0 / 120.0);
+                }
+
+                Assert.AreEqual(AIController.EngageDoctrine.Angles, ai.CurrentDoctrine,
+                    "Stalemate condition (timeInDoctrine > 20s + timeSinceFiringSolution > 12s) " +
+                    "should drive a switch to Angles after the 1s hysteresis.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(aiGo);
+                Object.DestroyImmediate(targetGo);
+            }
+        }
     }
 }

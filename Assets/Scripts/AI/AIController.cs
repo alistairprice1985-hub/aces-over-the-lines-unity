@@ -35,6 +35,13 @@ namespace AcesOverTheLines.AI
         // of energy. Round 6 Commit 1.
         public enum PursuitMode { Lead, Lag, Pure }
 
+        // Phase 2 engage-doctrine selector. BoomZoom is the default; the
+        // selector switches to Angles when the target sustains a hard
+        // bank or when B&Z has failed to produce a firing solution. The
+        // selector evaluates at the 5 Hz strategic tick inside the Engage
+        // branch of UpdateStateTransitions. See EvaluateEngageDoctrineSelector.
+        internal enum EngageDoctrine { BoomZoom, Angles }
+
         [SerializeField] Transform target;
         [SerializeField] float decisionRateHz = 5f;
         [SerializeField] bool showAIDebug = true;
@@ -186,6 +193,28 @@ namespace AcesOverTheLines.AI
         // a single-frame jitter.
         float _rangeOpeningSince;
 
+        // Phase 2 doctrine selector state. _engageDoctrine is the currently
+        // committed doctrine; _doctrineCandidate / _doctrineCandidateSince
+        // tracks the pending switch during the 1s hysteresis hold;
+        // _doctrineLastSwitch enforces the 3s reverse-lockout that prevents
+        // flapping between doctrines.
+        EngageDoctrine _engageDoctrine = EngageDoctrine.BoomZoom;
+        float _doctrineEnteredTime;
+        float _doctrineCandidateSince;
+        float _doctrineLastSwitch;
+        // Latched timestamps for target-bank detection. _targetHardTurnSince
+        // marks the rising edge when the target enters a > 30° bank;
+        // _targetCalmSince marks the rising edge when the target falls
+        // back below that threshold. At most one is non-zero at any time.
+        // _targetEverHardTurned is a sticky flag (reset only on Engage
+        // entry) that prevents "target has extended" from firing against
+        // a target that has never hard-turned in this engagement —
+        // otherwise a never-banking decoy would trigger the condition
+        // 4s after Engage entry and cancel any switch to Angles.
+        float _targetHardTurnSince;
+        float _targetCalmSince;
+        bool _targetEverHardTurned;
+
         // Diagnostic state cached per-tick for the OnGUI overlay.
         float _diagRange;
         float _diagDeflectionDeg;
@@ -215,6 +244,16 @@ namespace AcesOverTheLines.AI
         // from production code. Promoted from a bare _stateEnteredTime
         // read via InternalsVisibleTo rather than going public.
         internal float StateEnteredTime => _stateEnteredTime;
+
+        // Phase 2 selector observables for unit tests. None of these are
+        // read from production code — they exist to let the harness and
+        // EditMode tests assert on selector internals without going
+        // through public API.
+        internal EngageDoctrine CurrentDoctrine => _engageDoctrine;
+        internal float DoctrineEnteredTime => _doctrineEnteredTime;
+        internal float DoctrineCandidateSince => _doctrineCandidateSince;
+        internal float DoctrineLastSwitch => _doctrineLastSwitch;
+        internal float TargetHardTurnSince => _targetHardTurnSince;
 
         void Awake()
         {
@@ -356,22 +395,31 @@ namespace AcesOverTheLines.AI
                 {
                     float engageDwell = NowSeconds - _stateEnteredTime;
 
+                    // Phase 2: doctrine selector. Runs at 5 Hz (the strategic
+                    // tick rate). May switch _engageDoctrine BoomZoom ↔ Angles
+                    // based on target behaviour, energy state, altitude, and
+                    // stalemate timers. Subsequent gates in this branch are
+                    // either doctrine-gated (energy discipline, post-pass
+                    // extension — both BoomZoom-only) or shared (stalemate
+                    // timeout, collision avoidance, climb floor, ShouldDisengage).
+                    EvaluateEngageDoctrineSelector();
+
                     // Phase 1 boom-and-zoom: energy discipline.
                     // If the AI is more than 100m of energy DEFICIT AND
                     // the target is far enough (range > 800m) to climb-
                     // out productively, force Climb. Below 800m the AI
                     // commits despite deficit — extending the merge gives
                     // back kinetic energy from altitude trade.
-                    // Iteration rev-#8: added `range > 800f` gate. Without
-                    // it, Scenario 4 (target 500m above AI, deltaE=-500
-                    // from t=0) cycled Engage→Climb→Patrol every 0.5s
-                    // and never executed a real pursuit.
+                    // Iteration rev-#8: added `range > 800f` gate.
+                    // Phase 2: gated behind BoomZoom doctrine. In Angles
+                    // mode, energy management is the selector's job.
                     double selfEnergyE = ComputeEnergyState(_rb.position.y, _rb.linearVelocity.magnitude);
                     double targetEnergyE = ComputeEnergyState(
                         target.position.y,
                         _targetRb != null ? _targetRb.linearVelocity.magnitude : 0.0);
                     double deltaE = selfEnergyE - targetEnergyE;
-                    if (deltaE < -100.0 && range > 800f)
+                    if (_engageDoctrine == EngageDoctrine.BoomZoom
+                        && deltaE < -100.0 && range > 800f)
                     {
                         TransitionIfChanged(State.Climb);
                         return;
@@ -381,7 +429,11 @@ namespace AcesOverTheLines.AI
                     // Once the AI has been inside the firing-range envelope
                     // (250m) AND range has been continuously opening for
                     // 1.5s afterwards, the pass is over — climb out.
-                    if (_hasMadeFiringPass && range > 250f
+                    // Phase 2: gated behind BoomZoom doctrine. In Angles
+                    // mode, the AI never voluntarily breaks off pursuit;
+                    // the selector switches back to BoomZoom when needed.
+                    if (_engageDoctrine == EngageDoctrine.BoomZoom
+                        && _hasMadeFiringPass && range > 250f
                         && _rangeOpeningSince > 0f
                         && (float)NowSeconds - _rangeOpeningSince >= 1.5f)
                     {
@@ -404,7 +456,12 @@ namespace AcesOverTheLines.AI
                     // Collision avoidance: if we've closed inside the break-off
                     // range, force Disengage immediately. Prevents the AI from
                     // flying head-on into the target on overshoot.
-                    if (range < engageBreakOffRangeM)
+                    // Phase 2 iter #3: gated behind BoomZoom. In Angles, the
+                    // AI is sustaining a banked-turn tail chase — close range
+                    // is the goal, not a head-on collision risk. Allowing
+                    // close approach is necessary for the firing solution.
+                    if (_engageDoctrine == EngageDoctrine.BoomZoom
+                        && range < engageBreakOffRangeM)
                     {
                         TransitionIfChanged(State.Disengage);
                     }
@@ -472,6 +529,16 @@ namespace AcesOverTheLines.AI
                     : 0f;
                 _hasMadeFiringPass = false;
                 _rangeOpeningSince = 0f;
+
+                // Phase 2: reset doctrine selector. Each new engagement
+                // begins in BoomZoom; selector re-evaluates from scratch.
+                _engageDoctrine = EngageDoctrine.BoomZoom;
+                _doctrineEnteredTime = NowSeconds;
+                _doctrineCandidateSince = 0f;
+                _doctrineLastSwitch = 0f;
+                _targetHardTurnSince = 0f;
+                _targetCalmSince = 0f;
+                _targetEverHardTurned = false;
             }
 
             // Reset stabilizer history on state change. Setpoint
@@ -570,12 +637,25 @@ namespace AcesOverTheLines.AI
             };
         }
 
+        // Phase 2: Engage dispatches on the currently committed doctrine.
+        // BoomZoom is the legacy Phase 1 behaviour (perch-and-dive). Angles
+        // is the new doctrine added in Phase 2 (sustained banked turn at
+        // corner speed). The selector in UpdateStateTransitions decides
+        // which doctrine drives the setpoint emission this tick.
+        FlightSetpoint DoEngage()
+        {
+            if (target == null || _rb == null)
+                return new FlightSetpoint { DesiredAirspeedMs = patrolAirspeedMs };
+            return _engageDoctrine == EngageDoctrine.Angles
+                ? DoEngageAngles()
+                : DoEngageBoomZoom();
+        }
+
         // Phase 1 Engage rewrite (2026-05-17). Boom-and-zoom doctrine: maintain
         // energy state ≥ target's, approach from altitude advantage, commit to
-        // a single pure-pursuit attack pass, climb out after. Angles-fighting
-        // (Lag/Lead/Pure mode selection, pursuit-point geometry) is reserved
-        // for Phase 2. Energy-management transitions (deltaE < -100m → Climb,
-        // post-pass extension → Climb) live in UpdateStateTransitions; this
+        // a single pure-pursuit attack pass, climb out after. Energy-management
+        // transitions (deltaE < -100m → Climb, post-pass extension → Climb)
+        // live in UpdateStateTransitions and are gated behind BoomZoom; this
         // method is pure setpoint emission.
         //
         // Setpoint rules:
@@ -585,12 +665,9 @@ namespace AcesOverTheLines.AI
         //            angle-off → 0 → 0.7 rad bank.
         //   speed  — closing-rate driven. Opening → max pursuit. Closing far →
         //            cruise. Closing close & on-axis → 47 m/s to extend tracking.
-        //   fire   — unchanged: existing burst-fire cone latch.
-        FlightSetpoint DoEngage()
+        //   fire   — shared cone-latch helper.
+        FlightSetpoint DoEngageBoomZoom()
         {
-            if (target == null || _rb == null)
-                return new FlightSetpoint { DesiredAirspeedMs = patrolAirspeedMs };
-
             // --- Energy state (telemetry only — gating lives in the FSM) ---
             double selfAlt = _rb.position.y;
             double selfSpd = _rb.linearVelocity.magnitude;
@@ -669,30 +746,10 @@ namespace AcesOverTheLines.AI
             // Update prev-range AT THE END so all consumers used previous-frame value.
             _engagePrevRange = range;
 
-            // --- Firing decision (cone-latch burst — Fix 4, unchanged) ---
-            // Deflection-to-target. Phase 1 forces pure pursuit, so the
-            // deflection is identical to the legacy deflection-to-pursuit-
-            // point computation.
+            // --- Firing decision (cone-latch burst, shared helper) ---
             float deflectionDeg = Vector3.Angle(
                 _rb.rotation * new Vector3(1f, 0f, 0f), toTargetWorld);
-            float dt = Time.fixedDeltaTime;
-            if (deflectionDeg > 30f) _noFiringSolutionTime += dt;
-            else _noFiringSolutionTime = Mathf.Max(0f, _noFiringSolutionTime - dt);
-
-            bool inEntryCone = deflectionDeg <= entryConeDeg && range <= maxFireRangeM;
-            bool inHoldCone  = deflectionDeg <= holdConeDeg  && range <= maxFireRangeM;
-            bool fire;
-            if (inEntryCone)
-            {
-                _burstUntil = Mathf.Max(_burstUntil, NowSeconds + burstMinDuration);
-                _timeSinceFiringSolution = 0f;
-                fire = true;
-            }
-            else
-            {
-                fire = NowSeconds < _burstUntil && inHoldCone;
-                if (!fire) _timeSinceFiringSolution += dt;
-            }
+            bool fire = ComputeFiringDecision(deflectionDeg, range);
 
             // --- Diagnostic state cache ---
             _diagRange = range;
@@ -707,6 +764,202 @@ namespace AcesOverTheLines.AI
                 DesiredAirspeedMs = airspeed,
                 Fire = fire,
             };
+        }
+
+        // Phase 2 Angles doctrine. Sustained banked turn at corner speed.
+        // No perch logic, no post-pass extension, no energy gate — those
+        // are all BoomZoom behaviours that the selector turns off when
+        // committed to Angles.
+        //
+        // Setpoint rules:
+        //   bank   — signed-angle-off-nose with a SHARPER ramp than B&Z
+        //            (max bank reached at 15° off vs 30°). Stays on the
+        //            target's tail through hard manoeuvres.
+        //   pitch  — coordinated-turn lift compensation (offsets the
+        //            cos(bank) loss during the turn) plus vy damping
+        //            (keeps altitude steady).
+        //   speed  — corner speed (~50 m/s for the Sopwith airframe);
+        //            the airspeed where sustained turn rate is maximised.
+        //   fire   — same cone-latch helper as B&Z.
+        FlightSetpoint DoEngageAngles()
+        {
+            // --- Geometry ---
+            float range = Vector3.Distance(target.position, _rb.position);
+            Vector3 toTargetWorld = (target.position - _rb.position).normalized;
+            Vector3 toTargetBody = Quaternion.Inverse(_rb.rotation) * toTargetWorld;
+            float signedAngleOffDeg = Mathf.Atan2(toTargetBody.z, toTargetBody.x) * Mathf.Rad2Deg;
+
+            // --- Bank setpoint: sharper ramp than B&Z, saturates at 15° off ---
+            double bank = Mathf.Clamp(signedAngleOffDeg / 15f, -0.7f, 0.7f);
+
+            // --- Pitch setpoint: coordinated-turn lift compensation + vy
+            //     damp + altitude tracking (iter #2) ---
+            // Bank costs vertical lift proportional to (1 - cos(bank)); the AI
+            // needs MORE pitch in a turn to hold altitude. The vy damping
+            // term keeps altitude steady against accumulated drift. The
+            // altitude-tracking term (added in iter #2) closes any altitude
+            // differential inherited from the previous doctrine — without
+            // it, Angles holds whatever altitude the AI was at when the
+            // selector switched, which can leave the AI 10m below target
+            // and unable to align the pitch axis with the line of sight.
+            // Iter #5: tighter altitude tracking. vyDamping /30 → /15
+            // and altTracking /100 → /50 — twice the gain on both. The
+            // weaker version oscillated around target altitude (AI
+            // climbed past, then dived past) instead of converging.
+            var (bankRadSigned, _) = FlightStabilizer.ExtractAttitude(_rb.rotation);
+            float currentBankRad = Mathf.Abs((float)bankRadSigned);
+            double coordTurnPitch = (1.0 - Mathf.Cos(currentBankRad)) * 0.5;
+            double vyDamping = Mathf.Clamp(-_rb.linearVelocity.y / 15f, -0.15f, 0.15f);
+            float relAlt = (float)(target.position.y - _rb.position.y);
+            double altTrackingPitch = Mathf.Clamp(relAlt / 50f, -0.10f, 0.10f);
+            double pitch = coordTurnPitch + vyDamping + altTrackingPitch;
+
+            // --- Airspeed setpoint: corner speed ---
+            // Hardcoded 50 m/s for the Sopwith Camel airframe. If iteration
+            // shows this needs tuning per-aircraft, promote to a SerializeField.
+            double airspeed = 50.0;
+
+            // --- Firing decision (shared cone-latch helper) ---
+            float deflectionDeg = Vector3.Angle(
+                _rb.rotation * new Vector3(1f, 0f, 0f), toTargetWorld);
+            bool fire = ComputeFiringDecision(deflectionDeg, range);
+
+            // --- Diagnostic state cache ---
+            double targetSpdMs = _targetRb != null ? _targetRb.linearVelocity.magnitude : 0.0;
+            _diagRange = range;
+            _diagDeflectionDeg = deflectionDeg;
+            _diagPursuitMode = PursuitMode.Lead;
+            _diagDeltaE = ComputeEnergyState(_rb.position.y, _rb.linearVelocity.magnitude)
+                       - ComputeEnergyState(target.position.y, targetSpdMs);
+
+            return new FlightSetpoint
+            {
+                DesiredBankRad    = bank,
+                DesiredPitchRad   = pitch,
+                DesiredAirspeedMs = airspeed,
+                Fire = fire,
+            };
+        }
+
+        // Shared firing-decision helper used by both DoEngageBoomZoom and
+        // DoEngageAngles. Mutates the burst latch and the firing-solution
+        // timers (used by the stalemate timeout and selector). The cone
+        // thresholds are the existing entryConeDeg / holdConeDeg / max
+        // FireRangeM — firing behaviour is doctrine-independent.
+        bool ComputeFiringDecision(float deflectionDeg, float range)
+        {
+            float dt = Time.fixedDeltaTime;
+            if (deflectionDeg > 30f) _noFiringSolutionTime += dt;
+            else _noFiringSolutionTime = Mathf.Max(0f, _noFiringSolutionTime - dt);
+
+            bool inEntryCone = deflectionDeg <= entryConeDeg && range <= maxFireRangeM;
+            bool inHoldCone  = deflectionDeg <= holdConeDeg  && range <= maxFireRangeM;
+            if (inEntryCone)
+            {
+                _burstUntil = Mathf.Max(_burstUntil, NowSeconds + burstMinDuration);
+                _timeSinceFiringSolution = 0f;
+                return true;
+            }
+            bool fire = NowSeconds < _burstUntil && inHoldCone;
+            if (!fire) _timeSinceFiringSolution += dt;
+            return fire;
+        }
+
+        // Phase 2 doctrine selector. Runs at the 5 Hz strategic tick inside
+        // the Engage branch of UpdateStateTransitions. Evaluates whether
+        // the currently committed doctrine should switch. Uses a 1s
+        // hysteresis hold on the candidate and a 3s reverse-lockout to
+        // prevent flapping.
+        void EvaluateEngageDoctrineSelector()
+        {
+            if (target == null || _rb == null) return;
+
+            // 1. Update target-bank latched timestamps.
+            // Note: the spec called for `target.right.y` to derive bank
+            // magnitude, but this codebase has body forward = +X, so
+            // Unity Transform.right is the body forward in world — not
+            // body right. Using FlightStabilizer.ExtractAttitude for the
+            // canonical bank computation that respects the codebase's
+            // body convention.
+            var (targetBankRadSigned, _) = FlightStabilizer.ExtractAttitude(target.rotation);
+            float targetBankDeg = Mathf.Abs((float)targetBankRadSigned) * Mathf.Rad2Deg;
+            bool isBanked = targetBankDeg > 30f;
+            if (isBanked)
+            {
+                if (_targetHardTurnSince <= 0f) _targetHardTurnSince = NowSeconds;  // rising edge
+                _targetCalmSince = 0f;
+            }
+            else
+            {
+                if (_targetCalmSince <= 0f) _targetCalmSince = NowSeconds;  // rising edge
+                _targetHardTurnSince = 0f;
+            }
+            bool targetIsHardTurning = _targetHardTurnSince > 0f
+                && (NowSeconds - _targetHardTurnSince) > 2.0f;
+            if (targetIsHardTurning) _targetEverHardTurned = true;
+            // "Target extended" only meaningful if the target was previously
+            // hard-turning. A never-banking decoy doesn't count as having
+            // extended from a turn.
+            bool targetIsExtended = _targetEverHardTurned
+                && _targetCalmSince > 0f
+                && (NowSeconds - _targetCalmSince) > 4.0f;
+
+            // 2. Reverse-lockout: skip evaluation entirely if a switch
+            //    happened in the last 3 seconds.
+            if (_doctrineLastSwitch > 0f && (NowSeconds - _doctrineLastSwitch) < 3.0f)
+                return;
+
+            // 3. Compute shared inputs.
+            double selfEnergy = ComputeEnergyState(_rb.position.y, _rb.linearVelocity.magnitude);
+            double targetEnergy = ComputeEnergyState(
+                target.position.y,
+                _targetRb != null ? _targetRb.linearVelocity.magnitude : 0.0);
+            double deltaE = selfEnergy - targetEnergy;
+            float timeInDoctrine = NowSeconds - _doctrineEnteredTime;
+            float aiAltitude = _rb.position.y;
+
+            // 4. Per-doctrine candidate evaluation.
+            EngageDoctrine? candidate = null;
+            if (_engageDoctrine == EngageDoctrine.BoomZoom)
+            {
+                bool stalemate = timeInDoctrine > 20f && _timeSinceFiringSolution > 12f;
+                bool safe = aiAltitude > 700f && deltaE > -100.0;
+                if ((targetIsHardTurning || stalemate) && safe)
+                    candidate = EngageDoctrine.Angles;
+            }
+            else // Angles
+            {
+                bool altitudeBreach = aiAltitude < 700f;
+                bool energyDeficit = deltaE < -200.0;
+                // Iter #6: Angles stalemate bumped 30s/15s → 60s/30s.
+                // The shorter timers fired before Angles could complete a
+                // close-range pass; AI was making progress (24m min range
+                // on S1) but the back-switch interrupted it.
+                bool stalemate = timeInDoctrine > 60f && _timeSinceFiringSolution > 30f;
+                if (altitudeBreach || energyDeficit || stalemate || targetIsExtended)
+                    candidate = EngageDoctrine.BoomZoom;
+            }
+
+            // 5. Hysteresis: candidate must hold continuously for ≥1.0s
+            //    before committing.
+            if (candidate.HasValue && candidate.Value != _engageDoctrine)
+            {
+                if (_doctrineCandidateSince <= 0f)
+                {
+                    _doctrineCandidateSince = NowSeconds;
+                }
+                else if ((NowSeconds - _doctrineCandidateSince) >= 1.0f)
+                {
+                    _engageDoctrine = candidate.Value;
+                    _doctrineEnteredTime = NowSeconds;
+                    _doctrineLastSwitch = NowSeconds;
+                    _doctrineCandidateSince = 0f;
+                }
+            }
+            else
+            {
+                _doctrineCandidateSince = 0f;
+            }
         }
 
         FlightSetpoint DoEvade()
