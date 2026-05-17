@@ -109,6 +109,31 @@ namespace AcesOverTheLines.AI
         [SerializeField] float recoverAirspeedMs         = 70f;
         [SerializeField] float recoverPitchRad           = 0.3f;    // killer-test setpoint
 
+        // Round 6 Commit 2 — pathological-behaviour fixes from 2026-05-17 playtest.
+
+        [Header("Engage limits")]
+        [SerializeField] float engageStalemateTimeout = 25f;   // seconds — forced reset if Engage dwells without a firing solution
+        [SerializeField] float noFiringSolutionTimeout = 12f;  // seconds — entry-cone gap that counts as "no firing solution"
+
+        [Header("Disengage exit gates")]
+        [SerializeField] float disengageMinRange = 600f;        // metres
+        [SerializeField] float disengageMinDwell = 8f;          // seconds
+        [SerializeField] float disengageMinHeadingDelta = 70f;  // degrees off bandit bearing
+
+        [Header("Pursuit-mode hysteresis")]
+        [SerializeField] float modeSwitchHoldTime = 0.5f;   // seconds the raw mode must persist before committing
+        [SerializeField] float lagBleedMaxDeltaE = 100f;    // metres — above this ΔE, Lag re-positions instead of bleeding energy
+
+        [Header("Gunnery (cone-latch fire)")]
+        [SerializeField] float burstMinDuration = 0.40f;   // seconds — minimum trigger-hold once entry cone is satisfied
+        [SerializeField] float entryConeDeg     = 2.0f;    // degrees — angle-off required to START a burst
+        [SerializeField] float holdConeDeg      = 4.5f;    // degrees — angle-off allowed to CONTINUE a started burst
+        [SerializeField] float maxFireRangeM    = 250f;    // metres — hard range cap for any firing
+
+        [Header("Recovery floors")]
+        [SerializeField] float climbFloorAltitude = 700f;  // metres AGL — absolute altitude triggers Engage → Climb
+        [SerializeField] float climbFloorVy       = -20f;  // m/s — descent rate triggers Engage → Climb (less negative than the legacy abandon trigger)
+
         AircraftController _ctrl;
         Rigidbody _rb;
         Rigidbody _targetRb;
@@ -123,6 +148,13 @@ namespace AcesOverTheLines.AI
         float _engageEntryAltitude;
         float _lastCmdLogTime = -10f;
         float _lastPatrolGateLogTime;
+
+        // Round 6 Commit 2 — stalemate-timeout tracker and burst-fire latch.
+        float _timeSinceFiringSolution;
+        float _burstUntil;
+        PursuitMode _committedMode = PursuitMode.Lead;
+        PursuitMode _modeCandidate = PursuitMode.Lead;
+        float _modeCandidateSince;
 
         // Diagnostic state cached per-tick for the OnGUI overlay.
         float _diagRange;
@@ -274,6 +306,21 @@ namespace AcesOverTheLines.AI
                 }
 
                 case State.Engage:
+                {
+                    float engageDwell = Time.time - _stateEnteredTime;
+
+                    // Fix 1: forced reset if Engage has dwelled past the
+                    // stalemate timeout AND no firing solution has been
+                    // produced for too long. Without this, Engage has no
+                    // upper bound and the 2026-05-17 playtest saw 40s and
+                    // 197s Engage dwells with no resolution.
+                    if (engageDwell > engageStalemateTimeout
+                        && _timeSinceFiringSolution > noFiringSolutionTimeout)
+                    {
+                        TransitionIfChanged(State.Disengage);
+                        return;
+                    }
+
                     // Collision avoidance: if we've closed inside the break-off
                     // range, force Disengage immediately. Prevents the AI from
                     // flying head-on into the target on overshoot.
@@ -281,12 +328,13 @@ namespace AcesOverTheLines.AI
                     {
                         TransitionIfChanged(State.Disengage);
                     }
-                    // Tactical altitude-bleed abandon: if pursuit costs too
-                    // much altitude or vy is too negative, transition to
-                    // Climb instead of pressing further. This is FSM-level
-                    // energy management, not a per-tick control override.
-                    else if (_engageEntryAltitude - _rb.position.y > engageAbandonAltitudeDropM
-                        || _rb.linearVelocity.y < -engageAbandonDescentRateMs)
+                    // Fix 5: Engage → Climb floor on absolute altitude or
+                    // descent rate. Replaces the legacy
+                    // (entryAltitudeDrop > 500m) OR (vy < -45m/s) predicate,
+                    // which only caught catastrophic descents. Below Fix 1
+                    // so a stalemated AI does not oscillate Engage↔Climb.
+                    else if (_rb.linearVelocity.y <= climbFloorVy
+                        || _rb.position.y <= climbFloorAltitude)
                     {
                         TransitionIfChanged(State.Climb);
                     }
@@ -295,6 +343,7 @@ namespace AcesOverTheLines.AI
                         TransitionIfChanged(State.Disengage);
                     }
                     break;
+                }
 
                 case State.Evade:
                     if (Time.time - _stateEnteredTime > evadeDurationS)
@@ -302,9 +351,24 @@ namespace AcesOverTheLines.AI
                     break;
 
                 case State.Disengage:
-                    if (Time.time - _stateEnteredTime > disengageDurationS)
+                {
+                    // Fix 2: require real geometric separation, not just
+                    // own-ship recovery time. The legacy exit fired ~5s
+                    // after entry regardless of whether the AI was still
+                    // co-located with the bandit. BearingToTargetDeg()
+                    // returns the angle between body-forward and the
+                    // direction to target, which is the same scalar as
+                    // |DeltaAngle(ownHeading, bearingToTarget)|.
+                    float disengageDwell = Time.time - _stateEnteredTime;
+                    float headingDelta = BearingToTargetDeg();
+                    if (range > disengageMinRange
+                        && disengageDwell > disengageMinDwell
+                        && headingDelta > disengageMinHeadingDelta)
+                    {
                         TransitionIfChanged(State.Search);
+                    }
                     break;
+                }
 
                 case State.RTB:
                     break;
@@ -319,6 +383,7 @@ namespace AcesOverTheLines.AI
             _state = newState;
             _stateEnteredTime = Time.time;
             _noFiringSolutionTime = 0f;
+            _timeSinceFiringSolution = 0f;
             if (newState == State.Engage && _rb != null)
                 _engageEntryAltitude = _rb.position.y;
 
@@ -459,9 +524,31 @@ namespace AcesOverTheLines.AI
             Vector3 targetToSelf  = _rb.position - target.position;
             float aspectDeg = ComputeAspectAngleDeg(targetForward, targetToSelf);
 
-            // --- Pursuit mode ---
-            PursuitMode mode = SelectPursuitMode(
+            // --- Pursuit mode (with hysteresis, Fix 3a) ---
+            // SelectPursuitMode is pure-math; the hysteresis lives here so
+            // the static helper stays trivially testable. The raw decision
+            // must persist continuously for modeSwitchHoldTime before it
+            // overrides the committed mode — stops the per-tick Pure↔Lag
+            // flapping that drove throttle 1.00↔0.00 in playtest.
+            PursuitMode rawMode = SelectPursuitMode(
                 deltaE, aspectDeg, range, closeFireRangeM, visualRangeM);
+            if (rawMode != _committedMode)
+            {
+                if (rawMode != _modeCandidate)
+                {
+                    _modeCandidate = rawMode;
+                    _modeCandidateSince = Time.time;
+                }
+                else if (Time.time - _modeCandidateSince >= modeSwitchHoldTime)
+                {
+                    _committedMode = rawMode;
+                }
+            }
+            else
+            {
+                _modeCandidate = rawMode;
+            }
+            PursuitMode mode = _committedMode;
 
             // --- Pursuit point and setpoint ---
             Vector3 targetVel = _targetRb != null ? _targetRb.linearVelocity : Vector3.zero;
@@ -491,20 +578,43 @@ namespace AcesOverTheLines.AI
                 default:               airspeed = engageAirspeedMs;                          break;
             }
 
-            // --- Firing decision (unchanged from prior implementation) ---
-            // The fire-window deflection caps (25°/15°/60°) naturally filter
-            // shots that lag-mode produces; no explicit mode gate needed.
+            // Fix 3b: Lag energy-bleed gate. The 2026-05-17 playtest saw the
+            // AI commanding ptc=-0.50 and spd=47 while ΔE was already +498m.
+            // With that much energy advantage, Lag should re-position for a
+            // gunshot, not dump altitude. Below lagBleedMaxDeltaE we honour
+            // the original aggressive bleed; above, we soften both axes.
+            if (mode == PursuitMode.Lag)
+            {
+                bool allowEnergyBleed = deltaE < lagBleedMaxDeltaE;
+                pitch    = allowEnergyBleed ? -0.50 : -0.10;
+                airspeed = allowEnergyBleed ?  47.0 :  55.0;
+            }
+
+            // --- Firing decision (Fix 4: cone-latch burst) ---
+            // Replaces the per-tick burst-cycle toggle that produced
+            // single-tick fire=1 events in playtest. Trigger latches for
+            // burstMinDuration once the tight entry cone is satisfied;
+            // wider hold cone lets gunsight wobble continue the burst.
             float deflectionDeg = Vector3.Angle(
                 _rb.rotation * new Vector3(1f, 0f, 0f), toPursuitWorld);
             float dt = Time.fixedDeltaTime;
             if (deflectionDeg > 30f) _noFiringSolutionTime += dt;
             else _noFiringSolutionTime = Mathf.Max(0f, _noFiringSolutionTime - dt);
 
-            bool fire = ShouldFireMultiWindow(
-                deflectionDeg, range, _burstOn,
-                farFireRangeM,   farFireDeflectionDeg,
-                closeFireRangeM, closeFireDeflectionDeg,
-                snapFireRangeM,  snapFireDeflectionDeg);
+            bool inEntryCone = deflectionDeg <= entryConeDeg && range <= maxFireRangeM;
+            bool inHoldCone  = deflectionDeg <= holdConeDeg  && range <= maxFireRangeM;
+            bool fire;
+            if (inEntryCone)
+            {
+                _burstUntil = Mathf.Max(_burstUntil, Time.time + burstMinDuration);
+                _timeSinceFiringSolution = 0f;     // Fix 1 hook
+                fire = true;
+            }
+            else
+            {
+                fire = Time.time < _burstUntil && inHoldCone;
+                if (!fire) _timeSinceFiringSolution += dt;
+            }
 
             // --- Diagnostic state cache ---
             _diagRange = range;
