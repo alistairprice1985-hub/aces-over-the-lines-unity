@@ -156,7 +156,20 @@ namespace AcesOverTheLines.PlaytestHarness
                     -fromCentreStart.x * sin + fromCentreStart.z * cos);
                 Vector3 pos = centre + fromCentre;
                 Vector3 vel = new Vector3(Mathf.Cos(headingRad) * spd, 0f, -Mathf.Sin(headingRad) * spd);
-                Quaternion rot = Quaternion.AngleAxis(headingRad * Mathf.Rad2Deg, Vector3.up);
+                // Bank into the turn so the AI's doctrine selector can
+                // detect "target hard-turning" via FlightStabilizer.
+                // ExtractAttitude(target.rotation). The codebase convention
+                // is body-forward = +X, body-right = +Z, positive bank =
+                // right wing down. omega > 0 is a left turn (heading
+                // increases → forward rotates toward -Z), so left wing
+                // goes down, which is NEGATIVE bank.
+                // Composition: q_yaw * q_bank places bank in the body
+                // frame BEFORE yaw, so the final body-right axis carries
+                // the bank attitude as ExtractAttitude expects.
+                float bankDeg = -Mathf.Sign(omega) * 45f;
+                Quaternion qYaw = Quaternion.AngleAxis(headingRad * Mathf.Rad2Deg, Vector3.up);
+                Quaternion qBank = Quaternion.AngleAxis(bankDeg, Vector3.right);
+                Quaternion rot = qYaw * qBank;
                 return new PlayerTrajectoryState(pos, rot, vel, spd);
             }
         }
