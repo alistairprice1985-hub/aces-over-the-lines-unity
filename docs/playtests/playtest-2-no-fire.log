@@ -1,0 +1,111 @@
+Playtest 2 — Stage 6 Round 5 Commit 6 baseline, NO SHOTS FIRED (controlled experiment).
+Branch: main @ 9f5605e
+Unity: 6000.4.6f1
+Date: 2026-05-16
+Purpose: isolate whether the Recover failure in playtest 1 was caused by pilot
+incapacitation (damage hypothesis) or by an architectural stall-during-recovery
+bug. By not firing, pilot HP stays at 80; if the AI still crashes, the
+mechanism is architectural.
+
+# CONCLUSION: AI crashed with the same Recover failure pattern as playtest 1
+# despite no damage applied. Failure mode is architectural, not damage-related.
+
+[AI-CMD] state=Patrol  set(bnk=0.00 ptc=0.05 spd=55 fire=0)  out(ail=0.00 elv=0.02 thr=0.02)  alt=1000  vy=0.0  v=50.0
+[AI] Patrol → Engage  range=693m  alt=1000m  vy=-1.4m/s  dwelled=0.21s
+# [Cycle 1 — same opening as playtest 1]
+[AI-CMD] state=Engage  set(bnk=0.00 ptc=-0.50 spd=55 fire=0)  out(ail=0.00 elv=-0.54 thr=0.28)  alt=999  vy=-2.7  v=49.8
+[AI-CMD] state=Engage  set(bnk=0.00 ptc=-0.50 spd=55 fire=0)  out(ail=0.00 elv=-0.22 thr=0.28)  alt=996  vy=-11.3  v=50.1
+# [Engage dives, bank clamps to +0.70, alt drops 1000 → 741, vy reaches -45]
+[AI] Engage → Climb  range=346m  alt=741m  vy=-45.0m/s  dwelled=8.52s
+[AI-CMD] state=Climb  set(bnk=0.00 ptc=0.30 spd=45 fire=0)  out(ail=-0.42 elv=0.82 thr=0.00)  alt=723  vy=-43.1  v=75.6
+[AI-CMD] state=Climb  set(bnk=0.00 ptc=0.30 spd=45 fire=0)  out(ail=-0.10 elv=0.48 thr=0.00)  alt=706  vy=-21.8  v=74.5
+[AI-CMD] state=Climb  set(bnk=0.00 ptc=0.30 spd=45 fire=0)  out(ail=-0.03 elv=0.26 thr=0.00)  alt=701  vy=-2.6  v=72.4
+[AI] Climb → Patrol  range=390m  alt=701m  vy=3.3m/s  dwelled=1.67s
+[AI] Patrol → Engage  range=395m  alt=702m  vy=6.2m/s  dwelled=0.21s
+
+# [Cycle 2 — Engage dives again, then long Climb at low speed]
+[AI-CMD] state=Engage  set(bnk=0.70 ptc=-0.50 spd=55 fire=0)  out(ail=0.12 elv=-0.08 thr=0.00)  alt=702  vy=6.4  v=70.4
+# [Engage 4.78s, alt 702 → 567, vy=-45]
+[AI] Engage → Climb  range=403m  alt=567m  vy=-45.1m/s  dwelled=4.78s
+[AI-CMD] state=Climb  set(bnk=0.00 ptc=0.30 spd=45 fire=0)  out(ail=-0.73 elv=0.58 thr=0.00)  alt=554  vy=-44.9  v=76.7
+[AI-CMD] state=Climb  set(bnk=0.00 ptc=0.30 spd=45 fire=0)  out(ail=-0.13 elv=0.55 thr=0.00)  alt=535  vy=-26.8  v=76.1
+[AI-CMD] state=Climb  set(bnk=0.00 ptc=0.30 spd=45 fire=0)  out(ail=-0.04 elv=0.30 thr=0.00)  alt=527  vy=-5.7  v=74.1
+[AI-CMD] state=Climb  set(bnk=0.00 ptc=0.30 spd=45 fire=0)  out(ail=-0.01 elv=0.17 thr=0.00)  alt=528  vy=5.8  v=72.0
+# [Long Climb continues — speed drops from 76 → 25 m/s over 30.42 seconds; alt 535 → 701]
+# [Aircraft is near minimum-power speed throughout — flying flat-ish with marginal vy]
+# [Throttle saturates to 1.00 partway through]
+[AI-CMD] state=Climb  set(bnk=0.00 ptc=0.30 spd=45 fire=0)  out(ail=0.00 elv=0.02 thr=1.00)  alt=699  vy=4.7  v=31.8
+[AI] Climb → Patrol  range=351m  alt=701m  vy=4.8m/s  dwelled=30.42s
+[AI-CMD] state=Patrol  set(bnk=-0.45 ptc=0.15 spd=55 fire=0)  out(ail=-0.02 elv=-0.02 thr=0.02)  alt=701  vy=4.8  v=32.0
+[AI] Patrol → Engage  range=349m  alt=702m  vy=4.6m/s  dwelled=0.21s
+
+# [Cycle 3 — Engage from energy-depleted state (speed ~32 m/s, alt 702)]
+# [Bank oscillates ±0.70 trying to track player; aileron saturates frequently]
+# [Speed drops to 28-38 m/s range throughout, near stall]
+[AI-CMD] state=Engage  set(bnk=0.70 ptc=0.50 spd=55 fire=0)  out(ail=-0.56 elv=0.24 thr=0.92)  alt=703  vy=4.2  v=31.3
+[AI-CMD] state=Engage  set(bnk=0.70 ptc=0.50 spd=55 fire=0)  out(ail=0.94 elv=0.12 thr=1.00)  alt=705  vy=5.1  v=31.3
+[AI-CMD] state=Engage  set(bnk=-0.70 ptc=0.50 spd=55 fire=0)  out(ail=-0.40 elv=0.07 thr=1.00)  alt=709  vy=7.2  v=30.8
+# [...continues; speed bottoms at ~28 m/s, alt creeps to 738, then begins dropping]
+[AI] Engage → Disengage  range=58m  alt=730m  vy=-1.4m/s  dwelled=17.73s
+
+# [Cycle 3 Disengage — speed too low to recover, dive deepens]
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=0.40 elv=0.27 thr=0.40)  alt=730  vy=-1.3  v=34.4
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=0.55 elv=0.92 thr=1.00)  alt=728  vy=-5.2  v=34.3
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=0.22 elv=0.75 thr=1.00)  alt=725  vy=-10.0  v=34.8
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=-0.08 elv=0.78 thr=1.00)  alt=718  vy=-15.3  v=35.8
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=-0.38 elv=0.73 thr=1.00)  alt=709  vy=-20.6  v=37.3
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=-0.63 elv=0.62 thr=1.00)  alt=698  vy=-25.8  v=39.2
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=-0.84 elv=0.51 thr=1.00)  alt=683  vy=-30.9  v=41.6
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=-1.00 elv=0.40 thr=1.00)  alt=666  vy=-35.9  v=44.3
+[AI-CMD] state=Disengage  set(bnk=0.50 ptc=0.10 spd=55 fire=0)  out(ail=-1.00 elv=0.31 thr=1.00)  alt=647  vy=-40.7  v=47.5
+[AI] Disengage → Recover  range=107m  alt=632m  vy=-43.9m/s  dwelled=4.48s
+
+# FATAL RECOVER SEQUENCE — pilot is alive, no damage applied, but the same
+# initial-recovery-then-catastrophic-destabilisation pattern as playtest 1.
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.47 elv=0.32 thr=0.47)  alt=626  vy=-45.2  v=50.9
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.30 thr=0.89)  alt=602  vy=-49.7  v=54.5
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.27 thr=0.78)  alt=576  vy=-53.5  v=58.1
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.25 thr=0.66)  alt=548  vy=-55.0  v=61.5
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.23 thr=0.58)  alt=521  vy=-52.0  v=63.9
+# vy starts improving:
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.16 thr=0.58)  alt=498  vy=-41.6  v=64.5
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.10 thr=0.57)  alt=479  vy=-34.5  v=65.2
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.74 elv=0.07 thr=0.61)  alt=464  vy=-24.7  v=64.8
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.46 elv=0.06 thr=0.69)  alt=454  vy=-16.3  v=63.9
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.28 elv=0.14 thr=0.79)  alt=447  vy=-11.6  v=62.6
+# ↓ INFLECTION POINT: elv saturates, vy regresses despite max elevator command
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.31 elv=1.00 thr=0.87)  alt=440  vy=-16.0  v=61.6
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.62 elv=1.00 thr=0.94)  alt=431  vy=-21.0  v=61.1
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=1.00 thr=0.98)  alt=419  vy=-26.4  v=61.2
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.83 thr=0.99)  alt=404  vy=-34.5  v=61.9
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=-0.17 thr=0.96)  alt=384  vy=-45.9  v=63.3
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=-0.44 thr=0.92)  alt=358  vy=-57.6  v=64.7
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=-0.20 thr=0.80)  alt=328  vy=-62.9  v=67.3
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.01 thr=0.70)  alt=295  vy=-67.0  v=69.7
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.17 thr=0.59)  alt=260  vy=-68.9  v=71.6
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.31 thr=0.50)  alt=226  vy=-68.1  v=73.2
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.41 thr=0.43)  alt=193  vy=-64.3  v=74.4
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.48 thr=0.37)  alt=162  vy=-57.8  v=75.0
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.52 thr=0.35)  alt=135  vy=-48.6  v=74.9
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.90 elv=0.53 thr=0.36)  alt=114  vy=-37.5  v=74.2
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.64 elv=0.51 thr=0.41)  alt=98  vy=-26.9  v=72.9
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.46 elv=0.46 thr=0.48)  alt=86  vy=-18.8  v=71.3
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.33 elv=0.42 thr=0.62)  alt=78  vy=-13.3  v=68.5
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.23 elv=0.36 thr=0.82)  alt=73  vy=-8.4  v=64.8
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.16 elv=0.31 thr=1.00)  alt=70  vy=-5.3  v=60.9
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.10 elv=0.31 thr=1.00)  alt=67  vy=-3.7  v=57.6
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.08 elv=0.69 thr=1.00)  alt=66  vy=-4.9  v=55.6
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.22 elv=1.00 thr=1.00)  alt=62  vy=-10.0  v=54.5
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.69 elv=1.00 thr=1.00)  alt=55  vy=-15.6  v=54.0
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=1.00 thr=1.00)  alt=46  vy=-21.4  v=54.2
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.68 thr=1.00)  alt=34  vy=-27.5  v=55.0
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=-0.27 thr=1.00)  alt=18  vy=-35.5  v=56.5
+# Ground impact:
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=-0.05 thr=1.00)  alt=6  vy=2.4  v=27.7
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-1.00 elv=0.33 thr=1.00)  alt=6  vy=-2.9  v=26.6
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=-0.57 elv=0.38 thr=1.00)  alt=4  vy=-4.2  v=22.0
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=0.35 elv=0.45 thr=1.00)  alt=2  vy=0.0  v=10.4
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=0.00 elv=0.45 thr=1.00)  alt=2  vy=0.0  v=4.6
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=0.00 elv=0.45 thr=1.00)  alt=1  vy=0.0  v=0.1
+[AI-CMD] state=Recover  set(bnk=0.00 ptc=0.30 spd=70 fire=0)  out(ail=0.00 elv=0.45 thr=1.00)  alt=1  vy=0.0  v=0.0
+# Aircraft at rest on terrain. No damage applied at any point during this playtest.

@@ -107,3 +107,6 @@ InitTestScene*.unity*
 
 # Unity auto-recovery scratch -- never commit
 /[Aa]ssets/_[Rr]ecovery*
+
+# Playtest logs are archival evidence, NOT Unity debug output -- keep
+!/docs/playtests/*.log
